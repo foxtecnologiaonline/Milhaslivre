@@ -1,14 +1,22 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { getMany, getOne, run, query } from '../db';
-import { extractToken, requireAuth } from '../auth';
+import { getMany, getOne, run, transaction } from '../db';
+import { extractToken } from '../auth';
+import { logger } from '../logger';
+import {
+  ValidationError,
+  AuthenticationError,
+  NotFoundError,
+  ConflictError,
+  isAppError,
+} from '../error';
 
 const app = new Hono();
 
 const OperationSchema = z.object({
-  program: z.string().min(1),
-  amount: z.number().int().positive(),
-  pricePerThousand: z.number().positive(),
+  program: z.enum(['smiles', 'latampass', 'azulconnect', 'viceversa']),
+  amount: z.number().int().min(1000, 'Minimum 1000 points'),
+  pricePerThousand: z.number().positive('Price must be positive'),
   commissionPercentage: z.number().min(0).max(100),
 });
 
@@ -18,35 +26,45 @@ const ConfirmOperationSchema = z.object({
 
 // GET /api/operations - list operations (protected)
 app.get('/', async (c) => {
-  const token = await extractToken(c);
-  if (!token) {
-    return c.json({ error: 'Unauthorized' }, 401);
-  }
-
   try {
+    const token = await extractToken(c);
+    if (!token) {
+      throw new AuthenticationError();
+    }
+
     const operations = await getMany(
       `SELECT * FROM operations
-       WHERE seller_id = $1 OR buyer_id = $1 OR $2 = 'admin'
+       WHERE (seller_id = $1 OR buyer_id = $1 OR $2 = 'admin')
+       AND deleted_at IS NULL
        ORDER BY created_at DESC LIMIT 100`,
       [token.userId, token.role]
     );
 
+    logger.debug('Operations fetched', { count: operations.length, userId: token.userId });
     return c.json(operations);
   } catch (err) {
-    return c.json({ error: 'Failed to fetch operations' }, 500);
+    if (isAppError(err)) throw err;
+    logger.error('Failed to fetch operations', err);
+    throw err;
   }
 });
 
 // POST /api/operations - create operation (protected)
 app.post('/', async (c) => {
-  const token = await extractToken(c);
-  if (!token) {
-    return c.json({ error: 'Unauthorized' }, 401);
-  }
-
   try {
+    const token = await extractToken(c);
+    if (!token) {
+      throw new AuthenticationError();
+    }
+
     const body = await c.req.json();
     const validated = OperationSchema.parse(body);
+
+    // Verify user is seller
+    const user = await getOne('SELECT role FROM users WHERE id = $1', [token.userId]);
+    if (!user || user.role !== 'seller') {
+      throw new ConflictError('Only sellers can create operations');
+    }
 
     const operation = await getOne(
       `INSERT INTO operations (
@@ -62,72 +80,90 @@ app.post('/', async (c) => {
       ]
     );
 
+    logger.info('Operation created', { operationId: operation.id, sellerId: token.userId });
     return c.json(operation, 201);
   } catch (err) {
     if (err instanceof z.ZodError) {
-      return c.json({ error: 'Invalid input', details: err.errors }, 400);
+      throw new ValidationError('Invalid input', err.flatten().fieldErrors);
     }
-    return c.json({ error: 'Failed to create operation' }, 500);
+    if (isAppError(err)) throw err;
+    logger.error('Failed to create operation', err);
+    throw err;
   }
 });
 
 // POST /api/operations/:id/confirm - confirm operation (protected)
 app.post('/:id/confirm', async (c) => {
-  const token = await extractToken(c);
-  if (!token) {
-    return c.json({ error: 'Unauthorized' }, 401);
-  }
-
   try {
+    const token = await extractToken(c);
+    if (!token) {
+      throw new AuthenticationError();
+    }
+
     const { id } = c.req.param();
     const body = await c.req.json();
     const validated = ConfirmOperationSchema.parse(body);
 
     // Get operation
     const operation = await getOne(
-      `SELECT * FROM operations WHERE id = $1`,
+      `SELECT * FROM operations WHERE id = $1 AND deleted_at IS NULL`,
       [id]
     );
 
     if (!operation) {
-      return c.json({ error: 'Operation not found' }, 404);
+      throw new NotFoundError('Operation');
     }
 
     if (operation.status !== 'pending') {
-      return c.json({ error: 'Operation already confirmed or cancelled' }, 400);
+      throw new ConflictError('Operation cannot be confirmed in current status');
     }
 
-    // Update operation
-    const updated = await getOne(
-      `UPDATE operations SET buyer_id = $1, status = 'confirmed', updated_at = NOW()
-       WHERE id = $2 RETURNING *`,
-      [validated.buyerId, id]
-    );
+    // Use transaction for atomicity
+    const updated = await transaction(async (client) => {
+      // Update operation
+      const result = await client.query(
+        `UPDATE operations SET buyer_id = $1, status = 'confirmed', updated_at = NOW()
+         WHERE id = $2 RETURNING *`,
+        [validated.buyerId, id]
+      );
 
-    // Create transaction record
-    await run(
-      `INSERT INTO transactions (operation_id, amount, commission_amount, status)
-       VALUES ($1, $2, $3, 'pending')`,
-      [id, updated.total_price, updated.commission_amount]
-    );
+      const op = result.rows[0];
+
+      // Create transaction record
+      await client.query(
+        `INSERT INTO transactions (operation_id, amount, commission_amount, status)
+         VALUES ($1, $2, $3, 'pending')`,
+        [id, op.total_price, op.commission_amount]
+      );
+
+      return op;
+    });
+
+    logger.info('Operation confirmed', {
+      operationId: id,
+      buyerId: validated.buyerId,
+      amount: operation.amount,
+    });
 
     return c.json(updated);
   } catch (err) {
     if (err instanceof z.ZodError) {
-      return c.json({ error: 'Invalid input', details: err.errors }, 400);
+      throw new ValidationError('Invalid input', err.flatten().fieldErrors);
     }
-    return c.json({ error: 'Failed to confirm operation' }, 500);
+    if (isAppError(err)) throw err;
+    logger.error('Failed to confirm operation', err);
+    throw err;
   }
 });
 
 // GET /api/operations/stats - dashboard stats (protected)
 app.get('/stats', async (c) => {
-  const token = await extractToken(c);
-  if (!token) {
-    return c.json({ error: 'Unauthorized' }, 401);
-  }
-
   try {
+    const token = await extractToken(c);
+    if (!token) {
+      throw new AuthenticationError();
+    }
+
     const isAdmin = token.role === 'admin';
     const userId = token.userId;
 
@@ -135,16 +171,19 @@ app.get('/stats', async (c) => {
       `SELECT
         COUNT(*) as total_operations,
         SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_operations,
-        SUM(CASE WHEN status = 'completed' THEN commission_amount ELSE 0 END) as total_commission,
-        SUM(CASE WHEN status = 'completed' THEN total_price ELSE 0 END) as total_volume
+        COALESCE(SUM(CASE WHEN status = 'completed' THEN commission_amount ELSE 0 END), 0) as total_commission,
+        COALESCE(SUM(CASE WHEN status = 'completed' THEN total_price ELSE 0 END), 0) as total_volume
        FROM operations
-       WHERE ${isAdmin ? '1=1' : 'seller_id = $1 OR buyer_id = $1'}`,
+       WHERE (${isAdmin ? '1=1' : 'seller_id = $1 OR buyer_id = $1'})
+       AND deleted_at IS NULL`,
       isAdmin ? [] : [userId]
     );
 
-    return c.json(result);
+    return c.json(result || {});
   } catch (err) {
-    return c.json({ error: 'Failed to fetch stats' }, 500);
+    if (isAppError(err)) throw err;
+    logger.error('Failed to fetch stats', err);
+    throw err;
   }
 });
 

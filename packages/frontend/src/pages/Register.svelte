@@ -111,9 +111,12 @@
             id="cpf"
             type="text"
             bind:value={formData.cpf}
-            placeholder="00000000000"
-            maxlength="11"
-            pattern="\d{11}"
+            on:input={(e) => {
+              const cleaned = e.currentTarget.value.replace(/\D/g, '');
+              formData.cpf = cleaned.slice(0, 11);
+            }}
+            placeholder="000.000.000-00"
+            maxlength="14"
             required
             disabled={isLoading}
           />

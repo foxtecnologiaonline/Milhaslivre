@@ -1,20 +1,34 @@
-import { Pool, QueryResult } from 'pg';
+import { Pool, PoolClient, QueryResult } from 'pg';
+import { logger } from './logger';
+import { ServerError } from './error';
 
 let pool: Pool | null = null;
 
 export function getPool(): Pool {
   if (!pool) {
+    const dbUrl = process.env.DATABASE_URL;
+    if (!dbUrl) {
+      throw new Error('DATABASE_URL not configured');
+    }
+
     pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      max: 10,
+      connectionString: dbUrl,
+      max: 20,
+      min: 2,
       idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 2000,
+      connectionTimeoutMillis: 3000,
+      statement_timeout: 30000,
     });
 
     pool.on('error', (err) => {
-      console.error('Unexpected error on idle client', err);
+      logger.error('Unexpected pool error', err);
+    });
+
+    pool.on('connect', () => {
+      logger.debug('Database connection established');
     });
   }
+
   return pool;
 }
 
@@ -22,8 +36,14 @@ export async function query<T = any>(
   text: string,
   values?: any[]
 ): Promise<QueryResult<T>> {
-  const pool = getPool();
-  return pool.query<T>(text, values);
+  try {
+    logger.debug('Executing query', { query: text.slice(0, 100), valuesCount: values?.length });
+    const result = await getPool().query<T>(text, values);
+    return result;
+  } catch (err) {
+    logger.error('Query failed', err, { query: text.slice(0, 100) });
+    throw new ServerError('Database query failed');
+  }
 }
 
 export async function getOne<T = any>(
@@ -49,9 +69,29 @@ export async function run(
   await query(text, values);
 }
 
+export async function transaction<T>(
+  callback: (client: PoolClient) => Promise<T>
+): Promise<T> {
+  const client = await getPool().connect();
+
+  try {
+    await client.query('BEGIN');
+    const result = await callback(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    logger.error('Transaction failed', err);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 export async function closePool(): Promise<void> {
   if (pool) {
     await pool.end();
     pool = null;
+    logger.info('Database pool closed');
   }
 }

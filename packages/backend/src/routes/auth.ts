@@ -2,21 +2,40 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { getOne, run } from '../db';
 import { generateToken, extractToken } from '../auth';
+import { hashPassword, verifyPassword } from '../crypto';
+import { logger } from '../logger';
+import {
+  ValidationError,
+  AuthenticationError,
+  ConflictError,
+  AuthorizationError,
+  isAppError,
+} from '../error';
 
 const app = new Hono();
 
+// Validation schemas
+const EmailSchema = z.string().email('Email inválido');
+const PasswordSchema = z.string().min(8, 'Senha deve ter no mínimo 8 caracteres');
+const CPFSchema = z.string().regex(/^\d{11}$/, 'CPF deve ter 11 dígitos');
+const PhoneSchema = z.string().min(10, 'Telefone inválido');
+
 const RegisterSchema = z.object({
-  email: z.string().email(),
-  name: z.string().min(2),
-  cpf: z.string().regex(/^\d{11}$/),
-  phone: z.string().min(10),
+  email: EmailSchema,
+  name: z.string().min(2, 'Nome deve ter no mínimo 2 caracteres'),
+  cpf: CPFSchema,
+  phone: PhoneSchema,
   role: z.enum(['seller', 'buyer']),
-  password: z.string().min(8),
+  password: PasswordSchema,
+  confirmPassword: z.string(),
+}).refine((data) => data.password === data.confirmPassword, {
+  message: 'Passwords don\'t match',
+  path: ['confirmPassword'],
 });
 
 const LoginSchema = z.object({
-  email: z.string().email(),
-  password: z.string(),
+  email: EmailSchema,
+  password: z.string().min(1, 'Password required'),
 });
 
 // POST /api/auth/register
@@ -27,15 +46,18 @@ app.post('/register', async (c) => {
 
     // Check if user exists
     const existing = await getOne(
-      'SELECT id FROM users WHERE email = $1',
+      'SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL',
       [validated.email]
     );
 
     if (existing) {
-      return c.json({ error: 'Email already registered' }, 409);
+      throw new ConflictError('Email already registered');
     }
 
-    // Create user (in production, use bcrypt for password)
+    // Hash password
+    const passwordHash = await hashPassword(validated.password);
+
+    // Create user
     const user = await getOne(
       `INSERT INTO users (email, name, cpf, phone, role, password_hash, verified)
        VALUES ($1, $2, $3, $4, $5, $6, FALSE)
@@ -46,9 +68,15 @@ app.post('/register', async (c) => {
         validated.cpf,
         validated.phone,
         validated.role,
-        validated.password, // TODO: hash with bcrypt in production
+        passwordHash,
       ]
     );
+
+    if (!user) {
+      throw new Error('Failed to create user');
+    }
+
+    logger.info('User registered', { userId: user.id, email: user.email });
 
     const token = generateToken({
       userId: user.id,
@@ -59,9 +87,11 @@ app.post('/register', async (c) => {
     return c.json({ user, token }, 201);
   } catch (err) {
     if (err instanceof z.ZodError) {
-      return c.json({ error: 'Invalid input', details: err.errors }, 400);
+      throw new ValidationError('Invalid input', err.flatten().fieldErrors);
     }
-    return c.json({ error: 'Registration failed' }, 500);
+    if (isAppError(err)) throw err;
+    logger.error('Registration error', err);
+    throw err;
   }
 });
 
@@ -73,13 +103,21 @@ app.post('/login', async (c) => {
 
     const user = await getOne(
       `SELECT id, email, name, role, password_hash
-       FROM users WHERE email = $1`,
+       FROM users WHERE email = $1 AND deleted_at IS NULL`,
       [validated.email]
     );
 
-    if (!user || user.password_hash !== validated.password) {
-      return c.json({ error: 'Invalid credentials' }, 401);
+    if (!user) {
+      throw new AuthenticationError('Invalid credentials');
     }
+
+    const passwordMatch = await verifyPassword(validated.password, user.password_hash);
+    if (!passwordMatch) {
+      logger.warn('Failed login attempt', { email: validated.email });
+      throw new AuthenticationError('Invalid credentials');
+    }
+
+    logger.info('User logged in', { userId: user.id });
 
     const token = generateToken({
       userId: user.id,
@@ -93,9 +131,11 @@ app.post('/login', async (c) => {
     });
   } catch (err) {
     if (err instanceof z.ZodError) {
-      return c.json({ error: 'Invalid input', details: err.errors }, 400);
+      throw new ValidationError('Invalid input', err.flatten().fieldErrors);
     }
-    return c.json({ error: 'Login failed' }, 500);
+    if (isAppError(err)) throw err;
+    logger.error('Login error', err);
+    throw err;
   }
 });
 
@@ -103,14 +143,19 @@ app.post('/login', async (c) => {
 app.get('/me', async (c) => {
   const token = await extractToken(c);
   if (!token) {
-    return c.json({ error: 'Unauthorized' }, 401);
+    throw new AuthenticationError();
   }
 
-  return c.json({
-    id: token.userId,
-    email: token.email,
-    role: token.role,
-  });
+  const user = await getOne(
+    'SELECT id, email, name, role FROM users WHERE id = $1 AND deleted_at IS NULL',
+    [token.userId]
+  );
+
+  if (!user) {
+    throw new AuthenticationError('User not found');
+  }
+
+  return c.json(user);
 });
 
 export default app;
