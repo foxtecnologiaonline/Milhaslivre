@@ -1,0 +1,28 @@
+name = "milhaslivre-backend"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+[build]
+command = "npm run build"
+cwd = "."
+
+[[env.production.vars]]
+ENVIRONMENT = "production"
+
+[[env.staging.vars]]
+ENVIRONMENT = "staging"
+
+[env.development]
+vars = { ENVIRONMENT = "development" }
+
+# Database (via HTTP layer - Supabase or Railway)
+[env.development.vars]
+DATABASE_URL = "postgresql://localhost/milhaslivre"
+
+# Redis KV binding
+[[r2_buckets]]
+binding = "CACHE"
+
+# Environment variables
+[vars]
+JWT_SECRET = "dev-secret-change-in-production"

@@ -1,0 +1,25 @@
+{
+  "name": "milhaslivre-backend",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "wrangler build",
+    "deploy": "wrangler deploy",
+    "test": "vitest",
+    "db:migrate": "node scripts/migrate.js"
+  },
+  "dependencies": {
+    "hono": "^4.0.0",
+    "jwt-simple": "^0.5.6",
+    "pg": "^8.11.0",
+    "redis": "^4.6.0",
+    "twilio": "^4.0.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "wrangler": "^3.28.0",
+    "vitest": "^0.34.0",
+    "@types/node": "^20.0.0"
+  }
+}
