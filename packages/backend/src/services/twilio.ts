@@ -1,6 +1,5 @@
 // Twilio/WhatsApp service integration
-// TODO: Implement actual Twilio integration once SDK is available
-
+import twilio from 'twilio';
 import { logger } from '../logger';
 
 interface SendWhatsAppMessageOptions {
@@ -30,17 +29,39 @@ export const templates: WhatsAppTemplate = {
     `⏰ Lembrete de pagamento\n\nID: ${operationId}\nVencimento: ${dueDate}\n\nPor favor, confirme o pagamento no dashboard.`,
 };
 
+let client: ReturnType<typeof twilio> | null = null;
+
+function getClient(): ReturnType<typeof twilio> | null {
+  const { TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN } = process.env;
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) return null;
+
+  if (!client) {
+    client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+  }
+  return client;
+}
+
 export async function sendWhatsAppMessage(
   options: SendWhatsAppMessageOptions
 ): Promise<boolean> {
+  const twilioClient = getClient();
+  const fromNumber = process.env.TWILIO_PHONE_NUMBER;
+
+  if (!twilioClient || !fromNumber) {
+    logger.info('WhatsApp not configured, skipping send (dev no-op)', {
+      to: options.to,
+      length: options.body.length,
+    });
+    return false;
+  }
+
   try {
-    // TODO: Implement Twilio SDK integration
-    // const result = await twilio.messages.create({
-    //   from: `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`,
-    //   to: `whatsapp:${options.to}`,
-    //   body: options.body,
-    //   mediaUrl: options.mediaUrl,
-    // });
+    await twilioClient.messages.create({
+      from: `whatsapp:${fromNumber}`,
+      to: `whatsapp:${options.to}`,
+      body: options.body,
+      ...(options.mediaUrl && { mediaUrl: [options.mediaUrl] }),
+    });
 
     logger.info('WhatsApp message sent', {
       to: options.to,

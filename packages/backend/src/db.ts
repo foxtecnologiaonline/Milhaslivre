@@ -1,4 +1,4 @@
-import { Pool, PoolClient, QueryResult } from 'pg';
+import { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
 import { logger } from './logger';
 import { ServerError } from './error';
 
@@ -20,7 +20,7 @@ export function getPool(): Pool {
       statement_timeout: 30000,
     });
 
-    pool.on('error', (err) => {
+    pool.on('error', (err: Error) => {
       logger.error('Unexpected pool error', err);
     });
 
@@ -32,7 +32,7 @@ export function getPool(): Pool {
   return pool;
 }
 
-export async function query<T = any>(
+export async function query<T extends QueryResultRow = any>(
   text: string,
   values?: any[]
 ): Promise<QueryResult<T>> {
@@ -46,7 +46,7 @@ export async function query<T = any>(
   }
 }
 
-export async function getOne<T = any>(
+export async function getOne<T extends QueryResultRow = any>(
   text: string,
   values?: any[]
 ): Promise<T | null> {
@@ -54,7 +54,7 @@ export async function getOne<T = any>(
   return result.rows[0] || null;
 }
 
-export async function getMany<T = any>(
+export async function getMany<T extends QueryResultRow = any>(
   text: string,
   values?: any[]
 ): Promise<T[]> {

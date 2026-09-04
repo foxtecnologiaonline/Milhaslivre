@@ -1,7 +1,10 @@
-// Rate limiting middleware
+// Rate limiting middleware. Uses Redis (INCR + EXPIRE) when available so
+// limits are shared across instances; falls back to an in-memory Map
+// (single-instance only) when Redis is not configured or unreachable.
 import { Context } from 'hono';
 import { logger } from '../logger';
 import { RateLimitError } from '../error';
+import { getRedis } from '../redis';
 
 interface RateLimitConfig {
   windowMs: number; // Time window in ms
@@ -14,25 +17,57 @@ const defaultConfig: Record<string, RateLimitConfig> = {
   webhook: { windowMs: 1000, maxRequests: 10 }, // 10 per second
 };
 
-// In-memory store (use Redis in production)
+// In-memory fallback store
 const store = new Map<string, { count: number; resetTime: number }>();
+
+async function incrementInMemory(
+  key: string,
+  windowMs: number
+): Promise<{ count: number; resetTime: number }> {
+  const now = Date.now();
+  let record = store.get(key);
+
+  if (!record || now > record.resetTime) {
+    record = { count: 0, resetTime: now + windowMs };
+  }
+
+  record.count++;
+  store.set(key, record);
+  return record;
+}
+
+async function incrementInRedis(
+  key: string,
+  windowMs: number
+): Promise<{ count: number; resetTime: number } | null> {
+  const redis = await getRedis();
+  if (!redis) return null;
+
+  try {
+    const count = await redis.incr(key);
+    if (count === 1) {
+      await redis.pExpire(key, windowMs);
+    }
+    const ttl = await redis.pTTL(key);
+    return { count, resetTime: Date.now() + (ttl > 0 ? ttl : windowMs) };
+  } catch (err) {
+    logger.warn('Redis rate limit increment failed, falling back to in-memory', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
 
 export function createRateLimiter(type: 'auth' | 'api' | 'webhook' = 'api') {
   const config = defaultConfig[type];
 
   return async (c: Context, next: () => Promise<void>) => {
     const identifier = getIdentifier(c);
-    const key = `${type}:${identifier}`;
+    const key = `ratelimit:${type}:${identifier}`;
 
-    const now = Date.now();
-    let record = store.get(key);
-
-    if (!record || now > record.resetTime) {
-      record = { count: 0, resetTime: now + config.windowMs };
-      store.get(key); // Initialize
-    }
-
-    record.count++;
+    const record =
+      (await incrementInRedis(key, config.windowMs)) ??
+      (await incrementInMemory(key, config.windowMs));
 
     if (record.count > config.maxRequests) {
       logger.warn(`Rate limit exceeded for ${identifier}`, {
@@ -45,7 +80,7 @@ export function createRateLimiter(type: 'auth' | 'api' | 'webhook' = 'api') {
 
     // Set headers
     c.header('X-RateLimit-Limit', String(config.maxRequests));
-    c.header('X-RateLimit-Remaining', String(config.maxRequests - record.count));
+    c.header('X-RateLimit-Remaining', String(Math.max(0, config.maxRequests - record.count)));
     c.header('X-RateLimit-Reset', String(record.resetTime));
 
     await next();
@@ -62,7 +97,7 @@ function getIdentifier(c: Context): string {
   return c.req.header('x-forwarded-for') || c.req.header('cf-connecting-ip') || 'unknown';
 }
 
-// Cleanup old entries
+// Cleanup old in-memory entries (only relevant when Redis is unavailable)
 setInterval(() => {
   const now = Date.now();
   for (const [key, value] of store.entries()) {

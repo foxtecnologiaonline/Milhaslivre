@@ -6,8 +6,14 @@ import { createRateLimiter } from './middleware/rateLimit';
 import quotationRoutes from './routes/quotations';
 import operationRoutes from './routes/operations';
 import authRoutes from './routes/auth';
+import paymentRoutes from './routes/payments';
 
-const app = new Hono();
+type Variables = {
+  startTime: number;
+  requestId: string;
+};
+
+const app = new Hono<{ Variables: Variables }>();
 
 // CORS
 app.use(
@@ -57,9 +63,12 @@ app.get('/version', (c) =>
 app.use('/api/auth/*', createRateLimiter('auth'));
 app.route('/api/auth', authRoutes);
 
+app.use('/api/payments/webhook', createRateLimiter('webhook'));
+
 app.use('/api/*', createRateLimiter('api'));
 app.route('/api/quotations', quotationRoutes);
 app.route('/api/operations', operationRoutes);
+app.route('/api/payments', paymentRoutes);
 
 // 404 handler
 app.notFound((c) => {
@@ -90,7 +99,7 @@ app.onError((err, c) => {
         message: err.message,
         ...(process.env.ENVIRONMENT === 'development' && { details: err.details }),
       },
-      err.statusCode
+      err.statusCode as 400 | 401 | 403 | 404 | 409 | 429 | 500
     );
   }
 

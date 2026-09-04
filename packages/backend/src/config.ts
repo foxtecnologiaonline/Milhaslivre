@@ -15,6 +15,17 @@ const EnvSchema = z.object({
   TWILIO_AUTH_TOKEN: z.string().optional(),
   TWILIO_PHONE_NUMBER: z.string().optional(),
 
+  // Email (SendGrid)
+  SENDGRID_API_KEY: z.string().optional(),
+  SENDGRID_FROM_EMAIL: z.string().optional(),
+
+  // Payments (Stripe)
+  STRIPE_SECRET_KEY: z.string().optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().optional(),
+
+  // Cache
+  REDIS_URL: z.string().optional(),
+
   // Server
   ENVIRONMENT: z.enum(['development', 'staging', 'production']).default('development'),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),

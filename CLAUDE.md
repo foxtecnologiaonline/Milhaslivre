@@ -93,17 +93,23 @@ packages/
 - `POST /api/auth/register` - User registration
 - `POST /api/auth/login` - User login (returns JWT)
 - `GET /api/auth/me` - Get current user (requires auth)
+- `POST /api/auth/refresh` - Exchange a refresh token for a new access token (rotates it)
+- `POST /api/auth/logout` - Revoke a refresh token
 
 ### Quotations
-- `GET /api/quotations` - List active quotations
-- `POST /api/quotations` - Create 15-min quotation
-- `GET /api/quotations/:id` - Get specific quotation
+- `GET /api/quotations` - List active quotations (Redis-cached, 10s)
+- `POST /api/quotations` - Create 15-min quotation (Redis-cached for its validity window)
+- `GET /api/quotations/:id` - Get specific quotation (Redis-cached)
 
 ### Operations
 - `GET /api/operations` - List user's operations (protected)
-- `POST /api/operations` - Create new operation (protected)
-- `POST /api/operations/:id/confirm` - Confirm operation with buyer (protected)
+- `POST /api/operations` - Create new operation (protected, notifies seller via WhatsApp)
+- `POST /api/operations/:id/confirm` - Confirm operation with buyer (protected, atomic, notifies seller via WhatsApp + email)
 - `GET /api/operations/stats` - Dashboard stats (protected)
+
+### Payments
+- `POST /api/payments/:operationId/checkout` - Create a Stripe checkout session for a confirmed operation (protected)
+- `POST /api/payments/webhook` - Stripe webhook (signature-verified); marks the transaction/operation completed and notifies the seller
 
 ## 🎨 Frontend Pages (Implemented)
 
@@ -130,17 +136,24 @@ packages/
 - [x] Structured logging system
 
 **Backend API (Production-Ready)**
+- [x] Real Node.js server entrypoint (`@hono/node-server`) — `src/index.ts` stays a portable
+      Hono app export, `src/server.ts` adds the Node listener used by `npm run dev`/`start`
 - [x] Hono.js with proper error handling
 - [x] Custom error classes (ValidationError, AuthenticationError, etc)
-- [x] JWT authentication with token validation
+- [x] JWT authentication with expiration (`exp` claim, `JWT_EXPIRY`) + signature verification
+- [x] Refresh tokens: DB-backed (hashed, revocable, rotated on use), `/refresh` + `/logout`
 - [x] Input validation with Zod (all endpoints)
-- [x] Auth endpoints: register, login, me
-- [x] Quotations: create (15-min cache), list, get
+- [x] Auth endpoints: register, login, refresh, logout, me
+- [x] Quotations: create, list, get — cached in Redis with graceful in-memory fallback
 - [x] Operations: create, confirm, list, stats (with audit)
+- [x] Payments: Stripe checkout session + signature-verified webhook
 - [x] Business validators (CPF, CNPJ, amount, commission)
-- [x] Twilio WhatsApp service stubs
-- [x] PDF contract generation stubs
-- [x] Comprehensive Vitest suite
+- [x] Twilio WhatsApp integration (real SDK call; no-ops with a log when unconfigured)
+- [x] Email notifications (SendGrid; welcome, operation confirmed, payment receipt)
+- [x] PDF contract/receipt/statement generation (pdfkit, real rendered output)
+- [x] Redis-backed rate limiting (falls back to in-memory when Redis is unavailable)
+- [x] `scripts/migrate.js` — idempotent migration runner tracked via `schema_migrations`
+- [x] Integration test suite (Hono `app.request()` + mocked DB layer, no live Postgres needed)
 
 **Frontend (Mobile-Responsive)**
 - [x] SvelteKit pages (Home, Login, Register, Dashboard, 404)
@@ -153,31 +166,26 @@ packages/
 
 **Testing & Documentation**
 - [x] Auth tests (password hashing, validation)
+- [x] Integration tests: auth routes (register/login/refresh) and operations routes
+      (authorization rules, atomic confirm transaction) — 23 tests, mocked DB, no live Postgres
+- [x] CI/CD pipeline (GitHub Actions: backend typecheck + tests, frontend build, on every push/PR)
 - [x] Comprehensive README
 - [x] CLAUDE.md project context
 - [x] Environment example (.env.example)
-- [x] SQL migrations with comments
+- [x] SQL migrations with comments (001 initial, 002 audit trail, 003 refresh tokens)
 
 ## 🔄 Next Steps (Weeks 2-3)
 
-### Week 2: Production Ready & Integration
-- [ ] Implement bcrypt password hashing (replace plain text)
-- [ ] Add error handling & validation layer
-- [ ] Setup database connection pooling
-- [ ] Cache integration (Redis layer)
-- [ ] PDF contract generation
-- [ ] User verification email flow
-- [ ] Buyer company verification workflow
-
-### Week 3: WhatsApp & Testing
-- [ ] Twilio WhatsApp integration
-- [ ] Webhook handlers for WhatsApp messages
-- [ ] Automated notifications (pending ops, payments)
-- [ ] Unit tests (backend)
-- [ ] E2E tests (critical flows)
-- [ ] CI/CD pipeline setup
-- [ ] Production deployment
+### Remaining before production
+- [ ] User email verification flow (send + confirm a verification code)
+- [ ] Buyer company (KYC) verification workflow
+- [ ] 2FA for sensitive operations
+- [ ] E2E tests against a real Postgres + Redis (current suite mocks the DB layer)
 - [ ] Load testing & optimization
+- [ ] Production deployment (Vercel frontend, Railway/Render backend + Postgres)
+- [ ] Provision real Twilio/SendGrid/Stripe credentials in the target environment —
+      the integrations are implemented and no-op safely without them, so nothing breaks
+      today, but notifications/payments won't actually fire until they're set
 
 ## 💻 Development Commands
 
@@ -191,37 +199,44 @@ npm run dev
 # Build for production
 npm run build
 
-# Run database migrations
+# Run database migrations (idempotent, tracked via schema_migrations)
 npm run -w backend db:migrate
 
 # Test
 npm test
 
-# Deploy backend to Cloudflare
-npm run -w backend deploy
-
 # Deploy frontend to Vercel
 npm run -w frontend build
+
+# Backend runs as a real Node.js server (src/server.ts) in production —
+# `npm run -w backend build && npm run -w backend start`. The optional
+# `npm run -w backend deploy:workers` path targets Cloudflare Workers, but
+# routes depend on `pg`/Node `crypto` and need the Supabase HTTP API swap
+# noted in Known Limitations before that target is usable.
 ```
 
 ## 🔐 Security Checklist (Production-Ready)
 
 **Implemented ✅**
 - [x] Password hashing with PBKDF2 (crypto.ts)
-- [x] Rate limiting on auth endpoints (5/min) + global API (100/min)
+- [x] Rate limiting on auth endpoints (5/min) + global API (100/min), Redis-backed with
+      in-memory fallback
 - [x] SQL injection protection (parameterized queries + Zod validation)
 - [x] CORS properly configured (whitelist origins)
 - [x] Input validation with Zod on ALL endpoints
-- [x] JWT authentication with token verification
+- [x] JWT authentication with signature verification and `exp` enforcement — fixed a bug where
+      `jwt-simple`'s `decode()` was called with `noVerify=true`, which skipped signature
+      verification entirely; any well-formed token was accepted regardless of who signed it
+- [x] Refresh tokens stored hashed (SHA-256) in the DB, rotated on every use, revocable via logout
 - [x] Request logging & audit trail (audit_logs table)
 - [x] Error messages don't leak sensitive info
 - [x] Soft deletes (no hard deletes)
 - [x] Environment variable validation
 - [x] X-RateLimit headers included
+- [x] Stripe webhook signature verification (`stripe.webhooks.constructEvent`)
 
 **To Implement 🔄**
 - [ ] HTTPS/TLS enforcement (deployment config)
-- [ ] JWT token expiration & refresh (add exp to payload)
 - [ ] Email verification workflow
 - [ ] 2FA for sensitive operations
 - [ ] CSRF tokens for state-changing requests
@@ -229,18 +244,26 @@ npm run -w frontend build
 - [ ] Database encryption at rest
 - [ ] Secrets rotation policy
 - [ ] IP whitelisting for sensitive endpoints
-- [ ] Request signing (webhook verification)
 
 ## 📝 Environment Variables
 
-Required in `.env`:
+Required:
 ```
 DATABASE_URL=postgresql://...
-REDIS_URL=redis://...
 JWT_SECRET=your-secret-key
+```
+
+Optional — each integration no-ops safely (with a log line) when its variables are unset:
+```
+REDIS_URL=redis://...                  # cache + rate limiting; falls back to in-memory
 TWILIO_ACCOUNT_SID=...
 TWILIO_AUTH_TOKEN=...
 TWILIO_PHONE_NUMBER=...
+SENDGRID_API_KEY=...
+SENDGRID_FROM_EMAIL=no-reply@milhaslivre.com
+STRIPE_SECRET_KEY=...
+STRIPE_WEBHOOK_SECRET=...
+FRONTEND_URL=http://localhost:5173     # used for Stripe checkout success/cancel redirects
 VITE_API_URL=http://localhost:3000
 ```
 
@@ -312,34 +335,37 @@ app.get('/path', async (c) => {
 ## 📌 Known Limitations & TODOs
 
 **Security**
-- [ ] JWT expiration time (currently no exp claim) - add 24h default
-- [ ] Token refresh endpoint - implement sliding window
+- [x] JWT expiration (`exp` claim, `JWT_EXPIRY`, default 24h) — done
+- [x] Refresh token endpoint (`/api/auth/refresh`, DB-backed, rotated on use) — done
 - [ ] 2FA for admin operations
 - [ ] Email verification workflow before account activation
 - [ ] Phone verification for WhatsApp notifications
 
 **Business Logic**
 - [ ] Buyer company verification workflow (KYC)
-- [ ] Payment integration (currently stubbed - needs Stripe/PagSeguro)
+- [x] Payment integration — Stripe checkout + webhook implemented; PagSeguro not covered
 - [ ] Automatic point transfer verification
 - [ ] Dispute resolution system
 - [ ] Chargeback protection
 
 **Integration**
-- [ ] WhatsApp Twilio SDK integration (templates ready)
-- [ ] PDF contract generation (service ready, pdfkit needed)
-- [ ] Email notifications (SendGrid/AWS SES)
+- [x] WhatsApp Twilio SDK integration — done, no-ops when TWILIO_* is unset
+- [x] PDF contract generation (pdfkit) — done
+- [x] Email notifications (SendGrid) — done, AWS SES not covered
 - [ ] SMS fallback notifications
-- [ ] Webhook notifications for external systems
+- [ ] Webhook notifications for external systems (beyond the Stripe webhook)
 
 **Production**
-- [ ] Redis cache implementation (quotations, tokens)
+- [x] Redis cache implementation (quotations, rate limiting) — done, falls back to in-memory
 - [ ] Database read replicas for scaling
 - [ ] Cron jobs for stale operation cleanup
 - [ ] Background job queue (Bull/BullMQ)
 - [ ] Monitoring & alerting (Sentry, DataDog)
 - [ ] Performance profiling
 - [ ] Load testing suite
+- [ ] Cloudflare Workers deploy target needs the `pg`/Node `crypto` routes swapped for a
+      Supabase HTTP API before `deploy:workers` is production-usable (default target is
+      the Node.js server in `src/server.ts`)
 
 **Frontend**
 - [ ] Offline mode with service workers
@@ -349,6 +375,6 @@ app.get('/path', async (c) => {
 
 ---
 
-**Last Updated**: 2026-08-31
-**Status**: MVP Core Infrastructure Complete
-**Next Review**: After Week 2 integration work
+**Last Updated**: 2026-09-04
+**Status**: MVP integrations complete (Redis, Twilio, SendGrid, Stripe, JWT refresh, PDF, CI/CD) — remaining work is KYC/2FA/email-verification and live deployment
+**Next Review**: After production deployment

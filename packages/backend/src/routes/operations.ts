@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { getMany, getOne, run, transaction } from '../db';
 import { extractToken } from '../auth';
 import { logger } from '../logger';
+import { notifyOperationCreated, notifyOperationConfirmed } from '../services/twilio';
+import { sendOperationConfirmedEmail } from '../services/email';
 import {
   ValidationError,
   AuthenticationError,
@@ -61,7 +63,10 @@ app.post('/', async (c) => {
     const validated = OperationSchema.parse(body);
 
     // Verify user is seller
-    const user = await getOne('SELECT role FROM users WHERE id = $1', [token.userId]);
+    const user = await getOne<{ role: string; phone: string }>(
+      'SELECT role, phone FROM users WHERE id = $1',
+      [token.userId]
+    );
     if (!user || user.role !== 'seller') {
       throw new ConflictError('Only sellers can create operations');
     }
@@ -81,6 +86,13 @@ app.post('/', async (c) => {
     );
 
     logger.info('Operation created', { operationId: operation.id, sellerId: token.userId });
+
+    if (user.phone) {
+      notifyOperationCreated(user.phone, operation.id, validated.amount).catch((err) =>
+        logger.error('Failed to notify operation creation', err, { operationId: operation.id })
+      );
+    }
+
     return c.json(operation, 201);
   } catch (err) {
     if (err instanceof z.ZodError) {
@@ -144,6 +156,22 @@ app.post('/:id/confirm', async (c) => {
       buyerId: validated.buyerId,
       amount: operation.amount,
     });
+
+    const [seller, buyer] = await Promise.all([
+      getOne<{ email: string; phone: string }>('SELECT email, phone FROM users WHERE id = $1', [
+        operation.seller_id,
+      ]),
+      getOne<{ name: string }>('SELECT name FROM users WHERE id = $1', [validated.buyerId]),
+    ]);
+
+    if (seller && buyer) {
+      notifyOperationConfirmed(seller.phone, id, buyer.name).catch((err) =>
+        logger.error('Failed to notify operation confirmation', err, { operationId: id })
+      );
+      sendOperationConfirmedEmail(seller.email, id, buyer.name).catch((err) =>
+        logger.error('Failed to send operation confirmed email', err, { operationId: id })
+      );
+    }
 
     return c.json(updated);
   } catch (err) {

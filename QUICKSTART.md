@@ -340,15 +340,22 @@ psql -c "SELECT version();"
 
 ## 🎯 Next Steps
 
-### Week 2-3
-- [ ] Integrate Redis for caching
-- [ ] WhatsApp integration (Twilio)
-- [ ] PDF contract generation
-- [ ] Email notifications
-- [ ] Payment processor integration
+### Done
+- [x] Redis caching (quotations + rate limiting, falls back to in-memory)
+- [x] WhatsApp integration (Twilio)
+- [x] PDF contract generation (pdfkit)
+- [x] Email notifications (SendGrid)
+- [x] Payment processor integration (Stripe checkout + webhook)
+- [x] JWT expiration + refresh tokens
+- [x] CI/CD pipeline (GitHub Actions)
+
+### Remaining before production
+- [ ] Buyer company verification (KYC)
+- [ ] Email verification flow
+- [ ] 2FA for sensitive operations
+- [ ] Production deployment + real Twilio/SendGrid/Stripe credentials
 
 ### Month 2+
-- [ ] Buyer company verification
 - [ ] Real-time updates (WebSockets)
 - [ ] Mobile app (React Native)
 - [ ] Advanced analytics
