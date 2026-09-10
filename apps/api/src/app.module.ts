@@ -5,6 +5,7 @@ import { DatabaseModule } from './database/database.module';
 import { validateEnv } from './config/env.schema';
 import { IdentityModule } from './identity/identity.module';
 import { SellerModule } from './seller/seller.module';
+import { CatalogModule } from './catalog/catalog.module';
 
 @Module({
   imports: [
@@ -12,6 +13,7 @@ import { SellerModule } from './seller/seller.module';
     DatabaseModule,
     IdentityModule,
     SellerModule,
+    CatalogModule,
   ],
   controllers: [HealthController],
   providers: [],

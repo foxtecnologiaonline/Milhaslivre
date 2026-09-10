@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 // Idempotent SQL migration runner.
 //
-// Migrations live under apps/api/migrations/<module>/<NNN_description>.sql,
-// one file per change, applied in lexical order. Applied migrations are
-// tracked in public.schema_migrations so re-running this script is a no-op
-// for files already applied.
+// Migrations live under apps/api/migrations/<NN-module>/<NNN_description>.sql,
+// applied in lexical order across all module directories combined — the
+// leading NN- prefix on each module directory (01-identity, 02-seller, ...)
+// keeps that order aligned with the backlog/dependency order (e.g. catalog's
+// offers table has a FK into seller, so seller must migrate first). Applied
+// migrations are tracked in public.schema_migrations so re-running this
+// script is a no-op for files already applied.
 'use strict';
 
 require('dotenv').config();

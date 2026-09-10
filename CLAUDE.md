@@ -27,14 +27,22 @@ docker-compose.yml   # Postgres + Redis (dev local)
 Cada bounded context (`identity`, `seller`, `catalog`, `inventory`, `cart`,
 `checkout`, `payments`, `orders`, `shipping`, `reviews`) vira um módulo Nest sob
 `apps/api/src/<modulo>/`, com schema Postgres próprio (`<modulo>.*`). Nenhum módulo
-lê tabela de outro módulo diretamente — só via serviço exposto.
+lê tabela de outro módulo diretamente — só via serviço exposto (ex.: `catalog`
+resolve o seller aprovado chamando `SellerService.getApprovedSellerForUser`,
+exportado por `SellerModule`, em vez de consultar `seller.sellers`).
+
+Migrations ficam em `apps/api/migrations/<NN-modulo>/<NNN_descrição>.sql` — o
+prefixo `NN-` no nome do diretório do módulo (`01-identity`, `02-seller`,
+`03-catalog`, ...) mantém a ordem de aplicação alinhada à ordem de dependência do
+backlog (ex.: `catalog.offers` tem FK para `seller.sellers`, então `seller`
+precisa migrar antes).
 
 ## Backlog ativo (ordem fixa — seguir a seção 3 do escopo de engenharia)
 
 1. [x] Monorepo + Docker Compose (Postgres, Redis) + CI (lint + test) rodando verde
 2. [x] Módulo `identity`: registro/login/JWT + RBAC (`buyer`, `seller`, `admin`)
 3. [x] Módulo `seller`: onboarding + aprovação por admin
-4. [ ] Módulo `catalog`: produto + oferta + categoria, com testes de criação/consulta
+4. [x] Módulo `catalog`: produto + oferta + categoria, com testes de criação/consulta
 5. [ ] Módulo `inventory`: reserva/liberação de estoque atômica (lock otimista)
 6. [ ] Módulo `cart`: carrinho persistido por buyer, agregando ofertas de múltiplos sellers
 7. [ ] Módulo `checkout`: transforma carrinho em `Order` + `SubOrder`s, sem cobrar ainda
@@ -143,7 +151,21 @@ npm run build                # build de produção em api e web
       malformados na rota `:id` batiam direto no Postgres e estouravam 500 em
       vez de 404 — corrigido com `ParseUUIDPipe` (retorna 400 para IDs mal
       formados, 404 para IDs válidos que não existem).
-- [ ] Itens 4–14: pendentes.
+- [x] Item 4 do backlog: módulo `catalog` — `POST /products` (role `seller`/`admin`),
+      `GET /products?query=` (busca por título via `ILIKE`, sem Meilisearch ainda),
+      `GET /products/:id` (retorna o produto com suas `offers`, ordenadas por
+      preço), `POST /products/:id/offers` (só sellers aprovados — chama
+      `SellerService.getApprovedSellerForUser`, demonstrando a regra de
+      comunicação entre módulos via serviço exposto). Migration
+      `migrations/03-catalog/001_create_catalog.sql` (schema `catalog`, tabelas
+      `categories` — com um seed inicial, sem endpoint de gestão ainda —,
+      `products` e `offers`; `offers.seller_id` com FK para `seller.sellers`).
+      Testes: unitários do `CatalogService` + e2e via supertest — caminho feliz
+      e erros (categoria inexistente, produto inexistente, seller não aprovado,
+      role sem permissão, ID malformado) cobertos. Validado manualmente ponta a
+      ponta contra um Postgres real (onboarding → tentativa de oferta bloqueada
+      → aprovação → oferta criada → produto com ofertas → busca).
+- [ ] Itens 5–14: pendentes.
 
 Infra compartilhada criada junto do item 2 (reaproveitável pelos próximos
 módulos): `ConfigModule` com validação Zod de env vars (`src/config/env.schema.ts`),

@@ -1,4 +1,10 @@
-import { ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import type { CreateSellerDto } from './dto/create-seller.schema';
 import type { UpdateSellerStatusDto } from './dto/update-seller-status.schema';
 import { SELLER_REPOSITORY, SellerRecord, SellerRepository } from './seller.repository';
@@ -38,5 +44,14 @@ export class SellerService {
     }
 
     return this.repository.updateStatus(id, dto.status, dto.reason ?? null);
+  }
+
+  // Exposed for other modules (e.g. catalog) to resolve a seller without reading seller.* directly.
+  async getApprovedSellerForUser(userId: string): Promise<SellerRecord> {
+    const seller = await this.repository.findByUserId(userId);
+    if (!seller || seller.status !== 'approved') {
+      throw new ForbiddenException('seller is not approved to sell yet');
+    }
+    return seller;
   }
 }
