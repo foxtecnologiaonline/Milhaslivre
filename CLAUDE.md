@@ -43,7 +43,7 @@ precisa migrar antes).
 2. [x] Módulo `identity`: registro/login/JWT + RBAC (`buyer`, `seller`, `admin`)
 3. [x] Módulo `seller`: onboarding + aprovação por admin
 4. [x] Módulo `catalog`: produto + oferta + categoria, com testes de criação/consulta
-5. [ ] Módulo `inventory`: reserva/liberação de estoque atômica (lock otimista)
+5. [x] Módulo `inventory`: reserva/liberação de estoque atômica (lock otimista)
 6. [ ] Módulo `cart`: carrinho persistido por buyer, agregando ofertas de múltiplos sellers
 7. [ ] Módulo `checkout`: transforma carrinho em `Order` + `SubOrder`s, sem cobrar ainda
 8. [ ] Módulo `payments`: gateway (Pagar.me), split por `SubOrder`, webhook idempotente
@@ -165,7 +165,24 @@ npm run build                # build de produção em api e web
       role sem permissão, ID malformado) cobertos. Validado manualmente ponta a
       ponta contra um Postgres real (onboarding → tentativa de oferta bloqueada
       → aprovação → oferta criada → produto com ofertas → busca).
-- [ ] Itens 5–14: pendentes.
+- [x] Item 5 do backlog: módulo `inventory` — `POST /offers/:id/reserve`
+      (qualquer usuário autenticado), `POST /offers/:id/release` (libera uma
+      reserva `active` específica por `reservationId`),
+      `PATCH /offers/:id/stock` (admin, ou o seller dono da oferta). O contador
+      `stock` continua em `catalog.offers` (owned pelo módulo `catalog`, como no
+      schema da seção 2); `inventory` só possui a trilha de reservas
+      (`inventory.reservations`) e chama de volta `CatalogService.reserveOfferStock`
+      /`releaseOfferStock`/`setOfferStock` para mutar o estoque — nunca lê/escreve
+      `catalog.offers` diretamente. A concorrência é resolvida com um único
+      `UPDATE catalog.offers SET stock = stock - $qty WHERE stock >= $qty` — o
+      `WHERE` funciona como a checagem otimista (CAS): ou o decremento e a
+      validação acontecem atomicamente, ou a operação falha porque a
+      precondição não vale mais. Migration
+      `migrations/04-inventory/001_create_reservations.sql`. Testes: unitários
+      do `InventoryService` (reservar acima do estoque, liberar duas vezes,
+      seller tentando mexer no estoque de outro seller) + e2e via supertest.
+      Validado manualmente ponta a ponta contra um Postgres real.
+- [ ] Itens 6–14: pendentes.
 
 Infra compartilhada criada junto do item 2 (reaproveitável pelos próximos
 módulos): `ConfigModule` com validação Zod de env vars (`src/config/env.schema.ts`),

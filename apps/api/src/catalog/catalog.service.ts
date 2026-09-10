@@ -1,4 +1,10 @@
-import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { SellerService } from '../seller/seller.service';
 import type { CreateOfferDto } from './dto/create-offer.schema';
 import type { CreateProductDto } from './dto/create-product.schema';
@@ -63,5 +69,37 @@ export class CatalogService {
       condition: dto.condition,
       slaDays: dto.slaDays,
     });
+  }
+
+  async getOfferById(id: string): Promise<OfferRecord> {
+    const offer = await this.offers.findById(id);
+    if (!offer) {
+      throw new NotFoundException('offer not found');
+    }
+    return offer;
+  }
+
+  async reserveOfferStock(offerId: string, quantity: number): Promise<OfferRecord> {
+    const updated = await this.offers.decrementStock(offerId, quantity);
+    if (updated) return updated;
+
+    await this.getOfferById(offerId);
+    throw new ConflictException('insufficient stock');
+  }
+
+  async releaseOfferStock(offerId: string, quantity: number): Promise<OfferRecord> {
+    const updated = await this.offers.incrementStock(offerId, quantity);
+    if (!updated) {
+      throw new NotFoundException('offer not found');
+    }
+    return updated;
+  }
+
+  async setOfferStock(offerId: string, quantity: number): Promise<OfferRecord> {
+    const updated = await this.offers.setStock(offerId, quantity);
+    if (!updated) {
+      throw new NotFoundException('offer not found');
+    }
+    return updated;
   }
 }

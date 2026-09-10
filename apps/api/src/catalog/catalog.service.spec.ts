@@ -57,6 +57,31 @@ class InMemoryOfferRepository implements OfferRepository {
   async findByProductId(productId: string) {
     return this.offers.filter((o) => o.productId === productId);
   }
+
+  async findById(id: string) {
+    return this.offers.find((o) => o.id === id) ?? null;
+  }
+
+  async decrementStock(id: string, quantity: number) {
+    const offer = this.offers.find((o) => o.id === id);
+    if (!offer || offer.stock < quantity) return null;
+    offer.stock -= quantity;
+    return offer;
+  }
+
+  async incrementStock(id: string, quantity: number) {
+    const offer = this.offers.find((o) => o.id === id);
+    if (!offer) return null;
+    offer.stock += quantity;
+    return offer;
+  }
+
+  async setStock(id: string, quantity: number) {
+    const offer = this.offers.find((o) => o.id === id);
+    if (!offer) return null;
+    offer.stock = quantity;
+    return offer;
+  }
 }
 
 const approvedSeller: SellerRecord = {

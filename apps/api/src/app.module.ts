@@ -6,6 +6,7 @@ import { validateEnv } from './config/env.schema';
 import { IdentityModule } from './identity/identity.module';
 import { SellerModule } from './seller/seller.module';
 import { CatalogModule } from './catalog/catalog.module';
+import { InventoryModule } from './inventory/inventory.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { CatalogModule } from './catalog/catalog.module';
     IdentityModule,
     SellerModule,
     CatalogModule,
+    InventoryModule,
   ],
   controllers: [HealthController],
   providers: [],

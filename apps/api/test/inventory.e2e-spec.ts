@@ -18,6 +18,12 @@ import {
   ProductRepository,
 } from '../src/catalog/product.repository';
 import {
+  CreateReservationInput,
+  RESERVATION_REPOSITORY,
+  ReservationRecord,
+  ReservationRepository,
+} from '../src/inventory/reservation.repository';
+import {
   CreateSellerInput,
   SELLER_REPOSITORY,
   SellerRecord,
@@ -63,7 +69,7 @@ class InMemorySellerRepository implements SellerRepository {
 
 class InMemoryProductRepository implements ProductRepository {
   products: ProductRecord[] = [];
-  categories: CategoryRecord[] = [{ id: randomUUID(), name: 'Eletrônicos', slug: 'eletronicos' }];
+  categories: CategoryRecord[] = [];
 
   async findById(id: string) {
     return this.products.find((p) => p.id === id) ?? null;
@@ -124,23 +130,50 @@ class InMemoryOfferRepository implements OfferRepository {
   }
 }
 
-describe('Catalog (e2e)', () => {
+class InMemoryReservationRepository implements ReservationRepository {
+  reservations: ReservationRecord[] = [];
+
+  async create(input: CreateReservationInput) {
+    const reservation: ReservationRecord = {
+      id: randomUUID(),
+      status: 'active',
+      createdAt: new Date(),
+      releasedAt: null,
+      ...input,
+    };
+    this.reservations.push(reservation);
+    return reservation;
+  }
+
+  async findById(id: string) {
+    return this.reservations.find((r) => r.id === id) ?? null;
+  }
+
+  async markReleased(id: string) {
+    const reservation = this.reservations.find((r) => r.id === id);
+    if (!reservation) throw new Error('not found');
+    reservation.status = 'released';
+    reservation.releasedAt = new Date();
+    return reservation;
+  }
+}
+
+describe('Inventory (e2e)', () => {
   let app: INestApplication;
   let jwtService: JwtService;
-  let sellerRepository: InMemorySellerRepository;
 
   beforeAll(async () => {
-    sellerRepository = new InMemorySellerRepository();
-
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     })
       .overrideProvider(SELLER_REPOSITORY)
-      .useValue(sellerRepository)
+      .useClass(InMemorySellerRepository)
       .overrideProvider(PRODUCT_REPOSITORY)
       .useClass(InMemoryProductRepository)
       .overrideProvider(OFFER_REPOSITORY)
       .useClass(InMemoryOfferRepository)
+      .overrideProvider(RESERVATION_REPOSITORY)
+      .useClass(InMemoryReservationRepository)
       .compile();
 
     app = moduleFixture.createNestApplication();
@@ -156,7 +189,7 @@ describe('Catalog (e2e)', () => {
     return jwtService.sign({ sub, email: `${sub}@example.com`, role });
   }
 
-  async function approvedSellerToken(sub: string) {
+  async function approvedSellerOffer(sub: string, stock: number) {
     const sellerToken = token('seller', sub);
     const onboardRes = await request(app.getHttpServer())
       .post('/sellers')
@@ -170,75 +203,82 @@ describe('Catalog (e2e)', () => {
       .send({ status: 'approved' })
       .expect(200);
 
-    return sellerToken;
+    const productRes = await request(app.getHttpServer())
+      .post('/products')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Produto', description: 'Descrição' })
+      .expect(201);
+
+    const offerRes = await request(app.getHttpServer())
+      .post(`/products/${productRes.body.id}/offers`)
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ priceCents: 1000, stock, condition: 'new', slaDays: 3 })
+      .expect(201);
+
+    return { sellerToken, offerId: offerRes.body.id as string };
   }
 
-  it('lists a product with its offers after an approved seller creates one, on the happy path', async () => {
-    const sellerToken = await approvedSellerToken('seller-catalog-1');
+  it('reserves and releases stock atomically on the happy path', async () => {
+    const { offerId } = await approvedSellerOffer('inv-seller-1', 10);
+    const buyerToken = token('buyer', 'inv-buyer-1');
 
-    const productRes = await request(app.getHttpServer())
-      .post('/products')
-      .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Notebook Gamer', description: 'Um notebook rápido' })
+    const reserveRes = await request(app.getHttpServer())
+      .post(`/offers/${offerId}/reserve`)
+      .set('Authorization', `Bearer ${buyerToken}`)
+      .send({ quantity: 4 })
       .expect(201);
 
-    await request(app.getHttpServer())
-      .post(`/products/${productRes.body.id}/offers`)
-      .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ priceCents: 500000, stock: 3, condition: 'new', slaDays: 5 })
+    expect(reserveRes.body.status).toBe('active');
+
+    const releaseRes = await request(app.getHttpServer())
+      .post(`/offers/${offerId}/release`)
+      .set('Authorization', `Bearer ${buyerToken}`)
+      .send({ reservationId: reserveRes.body.id })
       .expect(201);
 
-    const getRes = await request(app.getHttpServer())
-      .get(`/products/${productRes.body.id}`)
-      .expect(200);
-
-    expect(getRes.body.offers).toHaveLength(1);
-    expect(getRes.body.offers[0]).toMatchObject({ priceCents: 500000 });
-
-    const searchRes = await request(app.getHttpServer())
-      .get('/products')
-      .query({ query: 'Gamer' })
-      .expect(200);
-
-    expect(searchRes.body.some((p: { id: string }) => p.id === productRes.body.id)).toBe(true);
+    expect(releaseRes.body.status).toBe('released');
   });
 
-  it('rejects offer creation from a seller that is not approved', async () => {
-    const sellerToken = token('seller', 'seller-catalog-2');
-    await request(app.getHttpServer())
-      .post('/sellers')
-      .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ companyName: 'Loja pendente', document: '98765432100' })
-      .expect(201);
-
-    const productRes = await request(app.getHttpServer())
-      .post('/products')
-      .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Mouse', description: 'Um mouse' })
-      .expect(201);
+  it('rejects reserving more than the available stock', async () => {
+    const { offerId } = await approvedSellerOffer('inv-seller-2', 2);
 
     return request(app.getHttpServer())
-      .post(`/products/${productRes.body.id}/offers`)
+      .post(`/offers/${offerId}/reserve`)
+      .set('Authorization', `Bearer ${token('buyer', 'inv-buyer-2')}`)
+      .send({ quantity: 5 })
+      .expect(409);
+  });
+
+  it('lets the owning seller update stock', async () => {
+    const { sellerToken, offerId } = await approvedSellerOffer('inv-seller-3', 10);
+
+    const res = await request(app.getHttpServer())
+      .patch(`/offers/${offerId}/stock`)
       .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ priceCents: 5000, stock: 1, condition: 'new', slaDays: 2 })
+      .send({ stock: 99 })
+      .expect(200);
+
+    expect(res.body.stock).toBe(99);
+  });
+
+  it("rejects a seller updating another seller's offer stock", async () => {
+    const { offerId } = await approvedSellerOffer('inv-seller-4', 10);
+    const otherSellerToken = await approvedSellerOffer('inv-seller-5', 1).then((r) => r.sellerToken);
+
+    return request(app.getHttpServer())
+      .patch(`/offers/${offerId}/stock`)
+      .set('Authorization', `Bearer ${otherSellerToken}`)
+      .send({ stock: 5 })
       .expect(403);
   });
 
-  it('rejects product creation from a buyer role', () => {
-    return request(app.getHttpServer())
-      .post('/products')
-      .set('Authorization', `Bearer ${token('buyer', 'buyer-1')}`)
-      .send({ title: 'x', description: 'y' })
-      .expect(403);
-  });
+  it('rejects reserve/release/stock update without a token', async () => {
+    const { offerId } = await approvedSellerOffer('inv-seller-6', 10);
 
-  it('returns 404 for a well-formed id that does not exist', () => {
-    return request(app.getHttpServer())
-      .get(`/products/${randomUUID()}`)
-      .expect(404);
-  });
-
-  it('returns 400 for a malformed id', () => {
-    return request(app.getHttpServer()).get('/products/not-a-uuid').expect(400);
+    await request(app.getHttpServer()).post(`/offers/${offerId}/reserve`).send({ quantity: 1 }).expect(401);
+    await request(app.getHttpServer())
+      .patch(`/offers/${offerId}/stock`)
+      .send({ stock: 1 })
+      .expect(401);
   });
 });

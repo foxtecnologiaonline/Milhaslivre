@@ -52,4 +52,40 @@ export class PgOfferRepository implements OfferRepository {
     );
     return rows.map(mapRow);
   }
+
+  async findById(id: string): Promise<OfferRecord | null> {
+    const { rows } = await this.pool.query<OfferRow>(
+      `SELECT id, product_id, seller_id, price_cents, stock, condition, sla_days, is_buybox_winner, created_at
+       FROM catalog.offers WHERE id = $1`,
+      [id],
+    );
+    return rows[0] ? mapRow(rows[0]) : null;
+  }
+
+  async decrementStock(id: string, quantity: number): Promise<OfferRecord | null> {
+    const { rows } = await this.pool.query<OfferRow>(
+      `UPDATE catalog.offers SET stock = stock - $2 WHERE id = $1 AND stock >= $2
+       RETURNING id, product_id, seller_id, price_cents, stock, condition, sla_days, is_buybox_winner, created_at`,
+      [id, quantity],
+    );
+    return rows[0] ? mapRow(rows[0]) : null;
+  }
+
+  async incrementStock(id: string, quantity: number): Promise<OfferRecord | null> {
+    const { rows } = await this.pool.query<OfferRow>(
+      `UPDATE catalog.offers SET stock = stock + $2 WHERE id = $1
+       RETURNING id, product_id, seller_id, price_cents, stock, condition, sla_days, is_buybox_winner, created_at`,
+      [id, quantity],
+    );
+    return rows[0] ? mapRow(rows[0]) : null;
+  }
+
+  async setStock(id: string, quantity: number): Promise<OfferRecord | null> {
+    const { rows } = await this.pool.query<OfferRow>(
+      `UPDATE catalog.offers SET stock = $2 WHERE id = $1
+       RETURNING id, product_id, seller_id, price_cents, stock, condition, sla_days, is_buybox_winner, created_at`,
+      [id, quantity],
+    );
+    return rows[0] ? mapRow(rows[0]) : null;
+  }
 }
