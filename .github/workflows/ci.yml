@@ -6,8 +6,8 @@ on:
   pull_request:
 
 jobs:
-  backend:
-    name: Backend (typecheck + tests)
+  api:
+    name: API (lint + test)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,25 +20,37 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Typecheck
-        run: npm run lint -w backend
+      - name: Lint
+        run: npm run lint -w apps/api
 
-      - name: Run tests
-        run: npm test -w backend
+      - name: Unit tests
+        run: npm test -w apps/api
 
-  frontend:
-    name: Frontend (build)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
+      - name: E2E tests
+        run: npm run test:e2e -w apps/api
 
       - name: Build
-        run: npm run build -w frontend
+        run: npm run build -w apps/api
+
+  web:
+    name: Web (lint + test + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint -w apps/web
+
+      - name: Tests
+        run: npm test -w apps/web
+
+      - name: Build
+        run: npm run build -w apps/web

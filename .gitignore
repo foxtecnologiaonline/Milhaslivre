@@ -2,7 +2,6 @@
 node_modules/
 pnpm-lock.yaml
 yarn.lock
-package-lock.json
 
 # Environment
 .env
@@ -13,7 +12,6 @@ package-lock.json
 dist/
 build/
 *.tsbuildinfo
-.wrangler/
 
 # IDE
 .vscode/
