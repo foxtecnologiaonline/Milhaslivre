@@ -44,7 +44,7 @@ precisa migrar antes).
 3. [x] Módulo `seller`: onboarding + aprovação por admin
 4. [x] Módulo `catalog`: produto + oferta + categoria, com testes de criação/consulta
 5. [x] Módulo `inventory`: reserva/liberação de estoque atômica (lock otimista)
-6. [ ] Módulo `cart`: carrinho persistido por buyer, agregando ofertas de múltiplos sellers
+6. [x] Módulo `cart`: carrinho persistido por buyer, agregando ofertas de múltiplos sellers
 7. [ ] Módulo `checkout`: transforma carrinho em `Order` + `SubOrder`s, sem cobrar ainda
 8. [ ] Módulo `payments`: gateway (Pagar.me), split por `SubOrder`, webhook idempotente
 9. [ ] Módulo `shipping`: cotação de frete por `SubOrder` no checkout + etiqueta pós-pagamento
@@ -182,7 +182,22 @@ npm run build                # build de produção em api e web
       do `InventoryService` (reservar acima do estoque, liberar duas vezes,
       seller tentando mexer no estoque de outro seller) + e2e via supertest.
       Validado manualmente ponta a ponta contra um Postgres real.
-- [ ] Itens 6–14: pendentes.
+- [x] Item 6 do backlog: módulo `cart` — `POST /cart/items` (upsert: mesma
+      oferta soma quantidade em vez de duplicar linha),
+      `GET /cart` (itens do buyer autenticado, cada um enriquecido com a
+      `offer` via `CatalogService.getOfferById`), `DELETE /cart/items/:id`
+      (204, só o dono do item pode remover). Restrito ao role `buyer`. Não
+      valida estoque no momento de adicionar ao carrinho — isso é
+      responsabilidade do `checkout`/`inventory` no momento da compra; o
+      carrinho é só uma lista de intenção. Migration
+      `migrations/05-cart/001_create_cart_items.sql` (schema `cart`, uma
+      linha por `(buyer_id, offer_id)`, sem uma tabela `carts` separada — o
+      carrinho de um buyer é o conjunto de `cart_items` com seu `buyer_id`).
+      Testes: unitários do `CartService` + e2e via supertest — caminho feliz,
+      merge de quantidade, oferta inexistente, isolamento entre buyers, role
+      sem permissão. Validado manualmente ponta a ponta contra um Postgres
+      real.
+- [ ] Itens 7–14: pendentes.
 
 Infra compartilhada criada junto do item 2 (reaproveitável pelos próximos
 módulos): `ConfigModule` com validação Zod de env vars (`src/config/env.schema.ts`),

@@ -7,6 +7,7 @@ import { IdentityModule } from './identity/identity.module';
 import { SellerModule } from './seller/seller.module';
 import { CatalogModule } from './catalog/catalog.module';
 import { InventoryModule } from './inventory/inventory.module';
+import { CartModule } from './cart/cart.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { InventoryModule } from './inventory/inventory.module';
     SellerModule,
     CatalogModule,
     InventoryModule,
+    CartModule,
   ],
   controllers: [HealthController],
   providers: [],
