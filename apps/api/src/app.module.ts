@@ -8,6 +8,8 @@ import { SellerModule } from './seller/seller.module';
 import { CatalogModule } from './catalog/catalog.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { CartModule } from './cart/cart.module';
+import { OrdersModule } from './orders/orders.module';
+import { CheckoutModule } from './checkout/checkout.module';
 
 @Module({
   imports: [
@@ -18,6 +20,8 @@ import { CartModule } from './cart/cart.module';
     CatalogModule,
     InventoryModule,
     CartModule,
+    OrdersModule,
+    CheckoutModule,
   ],
   controllers: [HealthController],
   providers: [],

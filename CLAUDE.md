@@ -45,7 +45,7 @@ precisa migrar antes).
 4. [x] Módulo `catalog`: produto + oferta + categoria, com testes de criação/consulta
 5. [x] Módulo `inventory`: reserva/liberação de estoque atômica (lock otimista)
 6. [x] Módulo `cart`: carrinho persistido por buyer, agregando ofertas de múltiplos sellers
-7. [ ] Módulo `checkout`: transforma carrinho em `Order` + `SubOrder`s, sem cobrar ainda
+7. [x] Módulo `checkout`: transforma carrinho em `Order` + `SubOrder`s, sem cobrar ainda
 8. [ ] Módulo `payments`: gateway (Pagar.me), split por `SubOrder`, webhook idempotente
 9. [ ] Módulo `shipping`: cotação de frete por `SubOrder` no checkout + etiqueta pós-pagamento
 10. [ ] Módulo `orders`: status por `SubOrder` (pending → paid → shipped → delivered), evento por transição
@@ -197,7 +197,36 @@ npm run build                # build de produção em api e web
       merge de quantidade, oferta inexistente, isolamento entre buyers, role
       sem permissão. Validado manualmente ponta a ponta contra um Postgres
       real.
-- [ ] Itens 7–14: pendentes.
+- [x] Item 7 do backlog: módulo `checkout` — `POST /checkout` (role `buyer`,
+      sem body: opera sobre o carrinho do usuário autenticado). Primeira
+      implementação real da regra de negócio central: lê o carrinho
+      (`CartService.getCart`), agrupa os itens por `seller_id`, reserva
+      estoque item a item (`InventoryService.reserve`), cria 1 `Order` + N
+      `SubOrder` (transação única no Postgres, com preço unitário
+      congelado no momento do checkout — não recalculado depois) e só então
+      limpa os itens do carrinho. Se uma reserva falhar no meio do processo
+      (estoque insuficiente), as reservas já feitas nesse mesmo checkout são
+      liberadas (compensação estilo saga) e o carrinho permanece intacto —
+      não existe uma transação Postgres única cobrindo cart+inventory+orders
+      ao mesmo tempo, já que são schemas/módulos diferentes; a atomicidade
+      real é por escopo (a escrita do Order+SubOrders+items é atômica no
+      próprio schema `orders`; entre módulos, o rollback é compensatório).
+      Criado também `orders` (módulo novo, mínimo por enquanto): schema
+      `orders.*` (`orders`, `sub_orders`, `order_items`,
+      `migrations/06-orders/001_create_orders.sql`) e `OrdersService`
+      (só `createOrder`, chamado pelo `checkout`) — sem controller ainda:
+      `GET /orders/:id`, `GET /sellers/:id/orders`, `PATCH /suborders/:id/status`
+      e a emissão de eventos de domínio por transição de status ficam para o
+      item 10, que vai completar este mesmo módulo. Criação de `SubOrder` não
+      conta como "transição" (não há estado anterior), então não emite evento
+      ainda — a infra de eventos (Redis/BullMQ, per decisão fechada da
+      seção 0) entra quando a primeira transição de status real acontecer
+      (item 8, `payments`, `pending → paid`). Testes: unitários do
+      `CheckoutService` (split multi-seller, carrinho vazio, rollback com
+      estoque insuficiente) + e2e via supertest. Validado manualmente ponta a
+      ponta contra um Postgres real, inclusive lendo as linhas de
+      `orders.orders`/`sub_orders`/`order_items` direto no banco.
+- [ ] Itens 8–14: pendentes.
 
 Infra compartilhada criada junto do item 2 (reaproveitável pelos próximos
 módulos): `ConfigModule` com validação Zod de env vars (`src/config/env.schema.ts`),
