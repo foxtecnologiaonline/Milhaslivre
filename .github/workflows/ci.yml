@@ -9,6 +9,23 @@ jobs:
   api:
     name: API (lint + test)
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: marketplace
+          POSTGRES_PASSWORD: marketplace
+          POSTGRES_DB: marketplace
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U marketplace -d marketplace"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://marketplace:marketplace@localhost:5432/marketplace
+      JWT_SECRET: ci-only-secret-not-for-production
     steps:
       - uses: actions/checkout@v4
 
@@ -22,6 +39,9 @@ jobs:
 
       - name: Lint
         run: npm run lint -w apps/api
+
+      - name: Run migrations
+        run: npm run db:migrate -w apps/api
 
       - name: Unit tests
         run: npm test -w apps/api

@@ -32,7 +32,7 @@ lê tabela de outro módulo diretamente — só via serviço exposto.
 ## Backlog ativo (ordem fixa — seguir a seção 3 do escopo de engenharia)
 
 1. [x] Monorepo + Docker Compose (Postgres, Redis) + CI (lint + test) rodando verde
-2. [ ] Módulo `identity`: registro/login/JWT + RBAC (`buyer`, `seller`, `admin`)
+2. [x] Módulo `identity`: registro/login/JWT + RBAC (`buyer`, `seller`, `admin`)
 3. [ ] Módulo `seller`: onboarding + aprovação por admin
 4. [ ] Módulo `catalog`: produto + oferta + categoria, com testes de criação/consulta
 5. [ ] Módulo `inventory`: reserva/liberação de estoque atômica (lock otimista)
@@ -121,6 +121,23 @@ npm run build                # build de produção em api e web
 - [x] Item 1 do backlog: monorepo (npm workspaces), `apps/api` (NestJS) e `apps/web`
       (Next.js) com lint + testes configurados, `docker-compose.yml` (Postgres +
       Redis) e CI (GitHub Actions) rodando lint + test em ambos os apps.
-- [ ] Itens 2–14: nenhum módulo de domínio implementado ainda.
+- [x] Item 2 do backlog: módulo `identity` — `POST /auth/register`,
+      `POST /auth/login`, `POST /auth/refresh`, `GET /me`. JWT (`@nestjs/jwt` +
+      `passport-jwt`), RBAC via `Roles`/`RolesGuard`, senha com PBKDF2, refresh
+      token hashado (SHA-256) e rotacionado a cada uso. Migration
+      `migrations/identity/001_create_users.sql` (schema `identity`, tabelas
+      `users` e `refresh_tokens`). Testes: unitários do `IdentityService`
+      (repositório em memória) + e2e via supertest (repositório em memória) —
+      caminho feliz e de erro cobertos em cada endpoint. Validado manualmente
+      ponta a ponta contra um Postgres real local.
+- [ ] Itens 3–14: pendentes.
+
+Infra compartilhada criada junto do item 2 (reaproveitável pelos próximos
+módulos): `ConfigModule` com validação Zod de env vars (`src/config/env.schema.ts`),
+`DatabaseModule` expondo um `pg.Pool` global (`src/database/database.module.ts`,
+token `PG_POOL`), e um runner de migração idempotente
+(`scripts/migrate.js` → `npm run db:migrate -w apps/api`, migrations em
+`migrations/<módulo>/*.sql`, tracked via `public.schema_migrations`). CI roda as
+migrations contra um serviço Postgres antes dos testes.
 
 **Última atualização**: 2026-09-10
