@@ -1,0 +1,109 @@
+import { ConflictException, NotFoundException } from '@nestjs/common';
+import { SellerService } from './seller.service';
+import type { CreateSellerInput, SellerRecord, SellerRepository } from './seller.repository';
+import type { SellerStatus } from './types';
+
+class InMemorySellerRepository implements SellerRepository {
+  private sellers: SellerRecord[] = [];
+  private counter = 0;
+
+  async findById(id: string) {
+    return this.sellers.find((s) => s.id === id) ?? null;
+  }
+
+  async findByUserId(userId: string) {
+    return this.sellers.find((s) => s.userId === userId) ?? null;
+  }
+
+  async create(input: CreateSellerInput) {
+    const seller: SellerRecord = {
+      id: `seller-${++this.counter}`,
+      userId: input.userId,
+      companyName: input.companyName,
+      document: input.document,
+      status: 'pending',
+      rejectedReason: null,
+      createdAt: new Date(),
+      approvedAt: null,
+    };
+    this.sellers.push(seller);
+    return seller;
+  }
+
+  async updateStatus(id: string, status: SellerStatus, rejectedReason: string | null) {
+    const seller = this.sellers.find((s) => s.id === id);
+    if (!seller) throw new Error('not found');
+    seller.status = status;
+    seller.rejectedReason = rejectedReason;
+    seller.approvedAt = status === 'approved' ? new Date() : seller.approvedAt;
+    return seller;
+  }
+}
+
+const baseDto = { companyName: 'Loja da Ana', document: '12345678900' };
+
+describe('SellerService', () => {
+  describe('onboard', () => {
+    it('creates a pending seller profile on the happy path', async () => {
+      const service = new SellerService(new InMemorySellerRepository());
+
+      const seller = await service.onboard('user-1', baseDto);
+
+      expect(seller).toMatchObject({ userId: 'user-1', status: 'pending' });
+    });
+
+    it('rejects a second onboarding for the same user', async () => {
+      const service = new SellerService(new InMemorySellerRepository());
+      await service.onboard('user-1', baseDto);
+
+      await expect(service.onboard('user-1', baseDto)).rejects.toBeInstanceOf(ConflictException);
+    });
+  });
+
+  describe('findById', () => {
+    it('returns the seller on the happy path', async () => {
+      const service = new SellerService(new InMemorySellerRepository());
+      const created = await service.onboard('user-1', baseDto);
+
+      const found = await service.findById(created.id);
+
+      expect(found.id).toBe(created.id);
+    });
+
+    it('throws when the seller does not exist', async () => {
+      const service = new SellerService(new InMemorySellerRepository());
+
+      await expect(service.findById('missing')).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('updateStatus', () => {
+    it('approves a pending seller on the happy path', async () => {
+      const service = new SellerService(new InMemorySellerRepository());
+      const created = await service.onboard('user-1', baseDto);
+
+      const updated = await service.updateStatus(created.id, { status: 'approved' });
+
+      expect(updated.status).toBe('approved');
+      expect(updated.approvedAt).toBeInstanceOf(Date);
+    });
+
+    it('rejects updating the status of a seller that already has a decision', async () => {
+      const service = new SellerService(new InMemorySellerRepository());
+      const created = await service.onboard('user-1', baseDto);
+      await service.updateStatus(created.id, { status: 'approved' });
+
+      await expect(service.updateStatus(created.id, { status: 'rejected', reason: 'x' })).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+    });
+
+    it('throws when the seller does not exist', async () => {
+      const service = new SellerService(new InMemorySellerRepository());
+
+      await expect(service.updateStatus('missing', { status: 'approved' })).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+  });
+});

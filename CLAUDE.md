@@ -33,7 +33,7 @@ lê tabela de outro módulo diretamente — só via serviço exposto.
 
 1. [x] Monorepo + Docker Compose (Postgres, Redis) + CI (lint + test) rodando verde
 2. [x] Módulo `identity`: registro/login/JWT + RBAC (`buyer`, `seller`, `admin`)
-3. [ ] Módulo `seller`: onboarding + aprovação por admin
+3. [x] Módulo `seller`: onboarding + aprovação por admin
 4. [ ] Módulo `catalog`: produto + oferta + categoria, com testes de criação/consulta
 5. [ ] Módulo `inventory`: reserva/liberação de estoque atômica (lock otimista)
 6. [ ] Módulo `cart`: carrinho persistido por buyer, agregando ofertas de múltiplos sellers
@@ -130,7 +130,20 @@ npm run build                # build de produção em api e web
       (repositório em memória) + e2e via supertest (repositório em memória) —
       caminho feliz e de erro cobertos em cada endpoint. Validado manualmente
       ponta a ponta contra um Postgres real local.
-- [ ] Itens 3–14: pendentes.
+- [x] Item 3 do backlog: módulo `seller` — `POST /sellers` (onboarding, role
+      `seller`, um perfil por usuário), `GET /sellers/:id` (público),
+      `PATCH /sellers/:id/status` (admin, aprova/rejeita um seller `pending`,
+      motivo obrigatório ao rejeitar). Migration
+      `migrations/seller/001_create_sellers.sql` (schema `seller`,
+      `sellers.user_id` com FK para `identity.users`). Testes: unitários do
+      `SellerService` + e2e via supertest (repositório em memória) — caminho
+      feliz e erros (perfil duplicado, não encontrado, decisão já tomada,
+      papel/role sem permissão) cobertos. Validado manualmente ponta a ponta
+      contra um Postgres real, o que revelou e corrigiu um bug real: IDs
+      malformados na rota `:id` batiam direto no Postgres e estouravam 500 em
+      vez de 404 — corrigido com `ParseUUIDPipe` (retorna 400 para IDs mal
+      formados, 404 para IDs válidos que não existem).
+- [ ] Itens 4–14: pendentes.
 
 Infra compartilhada criada junto do item 2 (reaproveitável pelos próximos
 módulos): `ConfigModule` com validação Zod de env vars (`src/config/env.schema.ts`),
