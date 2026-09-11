@@ -3,6 +3,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { SUB_ORDER_STATUS_CHANGED, SubOrderStatusChangedEvent } from './order-events';
 import {
   CreateOrderInput,
+  OrderItemContext,
   ORDER_REPOSITORY,
   OrderRecord,
   OrderRepository,
@@ -46,6 +47,14 @@ export class OrdersService {
 
   async findSubOrdersBySeller(sellerId: string): Promise<SubOrderRecord[]> {
     return this.repository.findSubOrdersBySellerId(sellerId);
+  }
+
+  async getOrderItemContext(orderItemId: string): Promise<OrderItemContext> {
+    const context = await this.repository.findOrderItemContext(orderItemId);
+    if (!context) {
+      throw new NotFoundException('order item not found');
+    }
+    return context;
   }
 
   // Called by payments once a charge is confirmed paid: confirms the Order

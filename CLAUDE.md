@@ -49,7 +49,7 @@ precisa migrar antes).
 8. [x] Módulo `payments`: gateway (Pagar.me), split por `SubOrder`, webhook idempotente
 9. [x] Módulo `shipping`: cotação de frete por `SubOrder` no checkout + etiqueta pós-pagamento
 10. [x] Módulo `orders`: status por `SubOrder` (pending → paid → shipped → delivered), evento por transição
-11. [ ] Módulo `reviews`: liberado só após `delivered`
+11. [x] Módulo `reviews`: liberado só após `delivered`
 12. [ ] Storefront Next.js: home, busca, página de produto, carrinho, checkout
 13. [ ] Painel seller: cadastro de produto, listagem de pedidos
 14. [ ] Painel admin: aprovação de seller, moderação de catálogo
@@ -313,7 +313,30 @@ npm run build                # build de produção em api e web
       Postgres real: checkout → tentativa de `shipped` antes de pago (409) →
       pagamento via webhook simulado → `GET /sellers/:id/orders` já reflete
       `paid` → `shipped` → `delivered`.
-- [ ] Itens 11–14: pendentes.
+- [x] Item 11 do backlog: módulo `reviews` — `POST /reviews` (role `buyer`;
+      exige `orderItemId` + `targetType` (`product`|`seller`) + `rating`
+      (1–5); só aceita se o `SubOrder` daquele item estiver `delivered`, e só
+      o comprador dono da compra pode revisar; uma review por
+      `(orderItemId, targetType)` — dá pra revisar o produto e o seller
+      separadamente para a mesma compra, mas não duas vezes o mesmo alvo),
+      `GET /products/:id/reviews` (público). Resolve dono/status/produto
+      chamando `OrdersService.getOrderItemContext` (novo — join dentro do
+      próprio schema `orders`: order_items → sub_orders → orders) e
+      `CatalogService.getOfferById`, nunca lendo `orders.*`/`catalog.*`
+      diretamente. `product_id`/`seller_id` são gravados na review no momento
+      da criação (não recalculados em toda leitura), então
+      `GET /products/:id/reviews` é um `SELECT` direto em `reviews.reviews`
+      sem precisar de JOIN entre schemas. Migration
+      `migrations/09-reviews/001_create_reviews.sql` (schema `reviews`, FK
+      para `orders.order_items`/`catalog.products`/`seller.sellers`, CHECK
+      garantindo `target_type` e a coluna de destino correspondente
+      preenchida). Testes: unitários do `ReviewsService` (review de produto,
+      de seller, antes de entregue, compra de outro buyer, duplicata) + e2e
+      via supertest. Validado manualmente ponta a ponta contra um Postgres
+      real: checkout → review bloqueada (409) → pago (webhook) → shipped →
+      delivered → review de produto e de seller aceitas → duplicata
+      bloqueada → listagem pública.
+- [ ] Itens 12–14: pendentes (storefront, painel seller, painel admin — Next.js).
 
 Infra compartilhada criada junto do item 2 (reaproveitável pelos próximos
 módulos): `ConfigModule` com validação Zod de env vars (`src/config/env.schema.ts`),

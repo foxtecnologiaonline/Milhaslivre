@@ -13,6 +13,7 @@ import { OrdersModule } from './orders/orders.module';
 import { CheckoutModule } from './checkout/checkout.module';
 import { PaymentsModule } from './payments/payments.module';
 import { ShippingModule } from './shipping/shipping.module';
+import { ReviewsModule } from './reviews/reviews.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { ShippingModule } from './shipping/shipping.module';
     ShippingModule,
     CheckoutModule,
     PaymentsModule,
+    ReviewsModule,
   ],
   controllers: [HealthController],
   providers: [],

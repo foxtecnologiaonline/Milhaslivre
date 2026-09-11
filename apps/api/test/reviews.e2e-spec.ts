@@ -27,6 +27,13 @@ import type {
 } from '../src/inventory/reservation.repository';
 import { ORDER_REPOSITORY } from '../src/orders/order.repository';
 import type { CreateOrderInput, OrderRecord, OrderRepository } from '../src/orders/order.repository';
+import { REVIEW_REPOSITORY } from '../src/reviews/review.repository';
+import type {
+  CreateReviewInput,
+  ReviewRecord,
+  ReviewRepository,
+  ReviewTargetType,
+} from '../src/reviews/review.repository';
 import {
   CreateSellerInput,
   SELLER_REPOSITORY,
@@ -258,7 +265,24 @@ class InMemoryOrderRepository implements OrderRepository {
   }
 }
 
-describe('Orders (e2e)', () => {
+class InMemoryReviewRepository implements ReviewRepository {
+  reviews: ReviewRecord[] = [];
+  async create(input: CreateReviewInput) {
+    const review: ReviewRecord = { id: randomUUID(), createdAt: new Date(), ...input };
+    this.reviews.push(review);
+    return review;
+  }
+  async findByOrderItemAndTarget(orderItemId: string, targetType: ReviewTargetType) {
+    return (
+      this.reviews.find((r) => r.orderItemId === orderItemId && r.targetType === targetType) ?? null
+    );
+  }
+  async findByProductId(productId: string) {
+    return this.reviews.filter((r) => r.targetType === 'product' && r.productId === productId);
+  }
+}
+
+describe('Reviews (e2e)', () => {
   let app: INestApplication;
   let jwtService: JwtService;
   let orderRepository: InMemoryOrderRepository;
@@ -281,6 +305,8 @@ describe('Orders (e2e)', () => {
       .useClass(InMemoryReservationRepository)
       .overrideProvider(ORDER_REPOSITORY)
       .useValue(orderRepository)
+      .overrideProvider(REVIEW_REPOSITORY)
+      .useClass(InMemoryReviewRepository)
       .compile();
 
     app = moduleFixture.createNestApplication();
@@ -296,7 +322,7 @@ describe('Orders (e2e)', () => {
     return jwtService.sign({ sub, email: `${sub}@example.com`, role });
   }
 
-  async function checkedOutOrder(sub: string) {
+  async function deliveredPurchase(sub: string) {
     const sellerToken = token('seller', `${sub}-seller`);
     const onboardRes = await request(app.getHttpServer())
       .post('/sellers')
@@ -317,7 +343,7 @@ describe('Orders (e2e)', () => {
     const offerRes = await request(app.getHttpServer())
       .post(`/products/${productRes.body.id}/offers`)
       .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ priceCents: 3000, stock: 10, condition: 'new', slaDays: 3 })
+      .send({ priceCents: 2000, stock: 10, condition: 'new', slaDays: 3 })
       .expect(201);
 
     const buyerToken = token('buyer', `${sub}-buyer`);
@@ -331,101 +357,77 @@ describe('Orders (e2e)', () => {
       .set('Authorization', `Bearer ${buyerToken}`)
       .expect(201);
 
-    return {
-      sellerToken,
-      buyerToken,
-      sellerId: onboardRes.body.id as string,
-      orderId: checkoutRes.body.id as string,
-      subOrderId: checkoutRes.body.subOrders[0].id as string,
-    };
+    const orderItemId = checkoutRes.body.subOrders[0].items[0].id as string;
+
+    return { buyerToken, productId: productRes.body.id as string, orderItemId };
   }
 
-  it('lets the buyer view their consolidated order on the happy path', async () => {
-    const { buyerToken, orderId } = await checkedOutOrder('ord-1');
+  function markDelivered(orderItemId: string) {
+    for (const order of orderRepository.orders) {
+      for (const subOrder of order.subOrders) {
+        if (subOrder.items.some((i) => i.id === orderItemId)) {
+          subOrder.status = 'delivered';
+        }
+      }
+    }
+  }
 
-    const res = await request(app.getHttpServer())
-      .get(`/orders/${orderId}`)
+  it('reviews a delivered purchase and lists it on the product, on the happy path', async () => {
+    const { buyerToken, productId, orderItemId } = await deliveredPurchase('rev-1');
+    markDelivered(orderItemId);
+
+    const reviewRes = await request(app.getHttpServer())
+      .post('/reviews')
       .set('Authorization', `Bearer ${buyerToken}`)
-      .expect(200);
+      .send({ orderItemId, targetType: 'product', rating: 5, comment: 'Excelente' })
+      .expect(201);
+    expect(reviewRes.body.productId).toBe(productId);
 
-    expect(res.body.id).toBe(orderId);
+    const listRes = await request(app.getHttpServer()).get(`/products/${productId}/reviews`).expect(200);
+    expect(listRes.body.some((r: { id: string }) => r.id === reviewRes.body.id)).toBe(true);
   });
 
-  it("rejects a different buyer viewing someone else's order", async () => {
-    const { orderId } = await checkedOutOrder('ord-2');
+  it('rejects reviewing before the order is delivered', async () => {
+    const { buyerToken, orderItemId } = await deliveredPurchase('rev-2');
 
     return request(app.getHttpServer())
-      .get(`/orders/${orderId}`)
-      .set('Authorization', `Bearer ${token('buyer', 'someone-else')}`)
-      .expect(403);
-  });
-
-  it("lets the owning seller list their own sub-orders", async () => {
-    const { sellerToken, sellerId, subOrderId } = await checkedOutOrder('ord-3');
-
-    const res = await request(app.getHttpServer())
-      .get(`/sellers/${sellerId}/orders`)
-      .set('Authorization', `Bearer ${sellerToken}`)
-      .expect(200);
-
-    expect(res.body.some((so: { id: string }) => so.id === subOrderId)).toBe(true);
-  });
-
-  it("rejects a different seller listing another seller's orders", async () => {
-    const { sellerId } = await checkedOutOrder('ord-4');
-
-    return request(app.getHttpServer())
-      .get(`/sellers/${sellerId}/orders`)
-      .set('Authorization', `Bearer ${token('seller', 'someone-else')}`)
-      .expect(403);
-  });
-
-  it('drives a sub-order through paid -> shipped -> delivered, on the happy path', async () => {
-    const { sellerToken, subOrderId } = await checkedOutOrder('ord-5');
-    const subOrder = orderRepository.orders
-      .flatMap((o) => o.subOrders)
-      .find((so) => so.id === subOrderId)!;
-    subOrder.status = 'paid';
-
-    const shipped = await request(app.getHttpServer())
-      .patch(`/suborders/${subOrderId}/status`)
-      .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ status: 'shipped' })
-      .expect(200);
-    expect(shipped.body.status).toBe('shipped');
-
-    const delivered = await request(app.getHttpServer())
-      .patch(`/suborders/${subOrderId}/status`)
-      .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ status: 'delivered' })
-      .expect(200);
-    expect(delivered.body.status).toBe('delivered');
-  });
-
-  it('rejects shipping a sub-order that is not paid yet', async () => {
-    const { sellerToken, subOrderId } = await checkedOutOrder('ord-6');
-
-    return request(app.getHttpServer())
-      .patch(`/suborders/${subOrderId}/status`)
-      .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ status: 'shipped' })
+      .post('/reviews')
+      .set('Authorization', `Bearer ${buyerToken}`)
+      .send({ orderItemId, targetType: 'product', rating: 5 })
       .expect(409);
   });
 
-  it("rejects a different seller updating another seller's sub-order", async () => {
-    const { subOrderId } = await checkedOutOrder('ord-7');
+  it("rejects reviewing another buyer's purchase", async () => {
+    const { orderItemId } = await deliveredPurchase('rev-3');
+    markDelivered(orderItemId);
 
     return request(app.getHttpServer())
-      .patch(`/suborders/${subOrderId}/status`)
-      .set('Authorization', `Bearer ${token('seller', 'someone-else')}`)
-      .send({ status: 'shipped' })
+      .post('/reviews')
+      .set('Authorization', `Bearer ${token('buyer', 'someone-else')}`)
+      .send({ orderItemId, targetType: 'product', rating: 5 })
       .expect(403);
   });
 
-  it('returns 400 for a malformed order id', () => {
+  it('rejects a duplicate review for the same order item and target', async () => {
+    const { buyerToken, orderItemId } = await deliveredPurchase('rev-4');
+    markDelivered(orderItemId);
+    await request(app.getHttpServer())
+      .post('/reviews')
+      .set('Authorization', `Bearer ${buyerToken}`)
+      .send({ orderItemId, targetType: 'product', rating: 5 })
+      .expect(201);
+
     return request(app.getHttpServer())
-      .get('/orders/not-a-uuid')
-      .set('Authorization', `Bearer ${token('buyer', 'ord-8-buyer')}`)
-      .expect(400);
+      .post('/reviews')
+      .set('Authorization', `Bearer ${buyerToken}`)
+      .send({ orderItemId, targetType: 'product', rating: 3 })
+      .expect(409);
+  });
+
+  it('returns an empty list for a product with no reviews', () => {
+    return request(app.getHttpServer())
+      .get(`/products/${randomUUID()}/reviews`)
+      .expect(200)
+      .expect([]);
   });
 });

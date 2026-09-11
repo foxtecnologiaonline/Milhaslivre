@@ -3,6 +3,7 @@ import { Pool } from 'pg';
 import { PG_POOL } from '../database/database.module';
 import type {
   CreateOrderInput,
+  OrderItemContext,
   OrderItemRecord,
   OrderRecord,
   OrderRepository,
@@ -270,6 +271,34 @@ export class PgOrderRepository implements OrderRepository {
     }
 
     return Array.from(subOrdersById.values());
+  }
+
+  async findOrderItemContext(orderItemId: string): Promise<OrderItemContext | null> {
+    const { rows } = await this.pool.query<{
+      offer_id: string;
+      sub_order_id: string;
+      seller_id: string;
+      status: string;
+      buyer_id: string;
+    }>(
+      `SELECT oi.offer_id, oi.sub_order_id, so.seller_id, so.status, o.buyer_id
+       FROM orders.order_items oi
+       JOIN orders.sub_orders so ON so.id = oi.sub_order_id
+       JOIN orders.orders o ON o.id = so.order_id
+       WHERE oi.id = $1`,
+      [orderItemId],
+    );
+    const row = rows[0];
+    if (!row) return null;
+
+    return {
+      orderItemId,
+      offerId: row.offer_id,
+      subOrderId: row.sub_order_id,
+      sellerId: row.seller_id,
+      buyerId: row.buyer_id,
+      status: row.status,
+    };
   }
 
   async markOrderConfirmed(id: string): Promise<void> {

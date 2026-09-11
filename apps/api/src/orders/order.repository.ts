@@ -42,6 +42,15 @@ export interface OrderRecord {
   subOrders: SubOrderRecord[];
 }
 
+export interface OrderItemContext {
+  orderItemId: string;
+  offerId: string;
+  subOrderId: string;
+  sellerId: string;
+  buyerId: string;
+  status: string;
+}
+
 export const ORDER_REPOSITORY = Symbol('ORDER_REPOSITORY');
 
 export interface OrderRepository {
@@ -49,6 +58,7 @@ export interface OrderRepository {
   findById(id: string): Promise<OrderRecord | null>;
   findSubOrderById(id: string): Promise<SubOrderRecord | null>;
   findSubOrdersBySellerId(sellerId: string): Promise<SubOrderRecord[]>;
+  findOrderItemContext(orderItemId: string): Promise<OrderItemContext | null>;
   markOrderConfirmed(id: string): Promise<void>;
   updateSubOrderStatus(id: string, status: string): Promise<SubOrderRecord>;
 }

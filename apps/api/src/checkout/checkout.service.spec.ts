@@ -205,6 +205,24 @@ class InMemoryOrderRepository implements OrderRepository {
   async findSubOrdersBySellerId(sellerId: string) {
     return this.orders.flatMap((order) => order.subOrders.filter((so) => so.sellerId === sellerId));
   }
+  async findOrderItemContext(orderItemId: string) {
+    for (const order of this.orders) {
+      for (const subOrder of order.subOrders) {
+        const item = subOrder.items.find((i) => i.id === orderItemId);
+        if (item) {
+          return {
+            orderItemId,
+            offerId: item.offerId,
+            subOrderId: subOrder.id,
+            sellerId: subOrder.sellerId,
+            buyerId: order.buyerId,
+            status: subOrder.status,
+          };
+        }
+      }
+    }
+    return null;
+  }
 }
 
 function buildCheckout() {
