@@ -51,7 +51,7 @@ precisa migrar antes).
 10. [x] Módulo `orders`: status por `SubOrder` (pending → paid → shipped → delivered), evento por transição
 11. [x] Módulo `reviews`: liberado só após `delivered`
 12. [x] Storefront Next.js: home, busca, página de produto, carrinho, checkout
-13. [ ] Painel seller: cadastro de produto, listagem de pedidos
+13. [x] Painel seller: cadastro de produto, listagem de pedidos
 14. [ ] Painel admin: aprovação de seller, moderação de catálogo
 
 Nada da Fase 4/5 (cupom, chat, recomendação, disputa, fulfillment) entra antes do
@@ -374,7 +374,45 @@ npm run build                # build de produção em api e web
       `OPTIONS /products` passou a responder com
       `Access-Control-Allow-Origin` e o browser parou de bloquear as
       chamadas.
-- [ ] Itens 13–14: pendentes (painel seller, painel admin).
+- [x] Item 13 do backlog: painel seller (`/seller`, Next.js) — resolve "meu
+      perfil de seller" via um endpoint novo, `GET /sellers/me` (role
+      `seller`, precisa vir cadastrado ANTES de `GET /sellers/:id` no
+      controller, senão o Nest casava `me` como `:id` e tentava um cast de
+      UUID em `me`), que não existia porque nenhum contrato do MVP previa "o
+      seller descobrir o próprio id" — os outros endpoints de `seller` sempre
+      recebem um `:id` de fora (admin aprovando, produto resolvendo o
+      dono). `SellerService.findMine` reaproveita `findByUserId` do
+      repositório mas, ao contrário de `getApprovedSellerForUser` (usado pelo
+      `catalog`), não exige `approved` — o painel precisa mostrar os estados
+      `pending`/`rejected` também. O painel decide o que renderizar a partir
+      desse único fetch: sem perfil → formulário de onboarding
+      (`POST /sellers`); `pending`/`rejected` → aviso, sem formulário de
+      produto; `approved` → formulário de cadastro de produto (`POST
+      /products` + `POST /products/:id/offers` em sequência — cria o produto
+      e já cria a primeira oferta, os dois contratos já existentes do
+      `catalog`, sem endpoint novo aí) e a lista "Meus pedidos"
+      (`GET /sellers/:id/orders`, já existente desde o item 10), com um botão
+      de transição de status por `SubOrder` (`PATCH /suborders/:id/status`)
+      que só aparece quando há uma transição manual válida a partir do
+      status atual (`paid → shipped`, `shipped → delivered` — mesma máquina
+      de estados do backend, sem duplicar a regra no front: o botão só
+      existe se `NEXT_STATUS[status]` tiver um valor). Testes: unitário novo
+      para `SellerService.findMine` (dono encontra o próprio perfil, usuário
+      sem perfil ainda recebe 404) + e2e novo em `seller.e2e-spec.ts`
+      (`GET /sellers/me` autenticado e sem perfil). Validado manualmente
+      ponta a ponta num browser real (Playwright): cadastro como seller →
+      redireciona para `/seller` → onboarding → "aguardando aprovação" →
+      aprovado via chamada de admin (o painel admin de verdade é o item 14;
+      usei a mesma API que ele vai chamar) → formulário de produto aparece →
+      produto cadastrado pela UI aparece na home do storefront → pedido
+      criado direto via API contra esse produto, sub-order forçado a `paid`
+      via SQL só para o teste (não há gateway real neste ambiente para
+      chegar em `paid` pelo fluxo de pagamento, mesma limitação documentada
+      nos itens 8/9) → botão "Marcar como enviado" muda o badge para
+      "Enviado" → "Marcar como entregue" muda para "Entregue" e o botão some
+      (estado terminal), confirmando que a máquina de estados do backend e o
+      controle condicional do botão no front estão de acordo.
+- [ ] Item 14: pendente (painel admin).
 
 Infra compartilhada criada junto do item 2 (reaproveitável pelos próximos
 módulos): `ConfigModule` com validação Zod de env vars (`src/config/env.schema.ts`),

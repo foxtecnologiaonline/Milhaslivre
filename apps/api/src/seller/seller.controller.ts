@@ -35,6 +35,13 @@ export class SellerController {
     return this.sellerService.onboard(user.sub, dto);
   }
 
+  @Get('me')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  findMine(@CurrentUser() user: JwtPayload) {
+    return this.sellerService.findMine(user.sub);
+  }
+
   @Get(':id')
   findById(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.sellerService.findById(id);

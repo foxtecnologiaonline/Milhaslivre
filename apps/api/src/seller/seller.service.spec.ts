@@ -95,6 +95,23 @@ describe('SellerService', () => {
     });
   });
 
+  describe('findMine', () => {
+    it('returns the seller for the owning user on the happy path', async () => {
+      const service = buildService();
+      const created = await service.onboard('user-1', baseDto);
+
+      const found = await service.findMine('user-1');
+
+      expect(found.id).toBe(created.id);
+    });
+
+    it('throws when the user has no seller profile yet', async () => {
+      const service = buildService();
+
+      await expect(service.findMine('user-1')).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
   describe('updateStatus', () => {
     it('approves a pending seller on the happy path', async () => {
       const service = buildService();

@@ -38,6 +38,16 @@ export class SellerService {
     return seller;
   }
 
+  // Lets the seller panel resolve "my seller profile" without knowing the id
+  // up front (and regardless of approval status — unlike getApprovedSellerForUser).
+  async findMine(userId: string): Promise<SellerRecord> {
+    const seller = await this.repository.findByUserId(userId);
+    if (!seller) {
+      throw new NotFoundException('no seller profile for this user yet');
+    }
+    return seller;
+  }
+
   async updateStatus(id: string, dto: UpdateSellerStatusDto): Promise<SellerRecord> {
     const seller = await this.repository.findById(id);
     if (!seller) {

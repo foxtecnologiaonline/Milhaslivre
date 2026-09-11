@@ -126,6 +126,28 @@ describe('Seller (e2e)', () => {
       .expect(403);
   });
 
+  it('returns the caller own seller profile via GET /sellers/me', async () => {
+    const onboardRes = await request(app.getHttpServer())
+      .post('/sellers')
+      .set('Authorization', `Bearer ${token('seller', 'seller-user-3')}`)
+      .send({ companyName: 'Loja C', document: '11122233300' })
+      .expect(201);
+
+    const meRes = await request(app.getHttpServer())
+      .get('/sellers/me')
+      .set('Authorization', `Bearer ${token('seller', 'seller-user-3')}`)
+      .expect(200);
+
+    expect(meRes.body.id).toBe(onboardRes.body.id);
+  });
+
+  it('returns 404 from GET /sellers/me when the user has not onboarded yet', () => {
+    return request(app.getHttpServer())
+      .get('/sellers/me')
+      .set('Authorization', `Bearer ${token('seller', 'seller-user-4')}`)
+      .expect(404);
+  });
+
   it('returns 404 for a well-formed id that does not exist', () => {
     return request(app.getHttpServer())
       .get('/sellers/00000000-0000-0000-0000-000000000000')
