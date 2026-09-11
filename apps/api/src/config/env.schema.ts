@@ -11,6 +11,7 @@ export const envSchema = z.object({
   PAGARME_WEBHOOK_SECRET: z.string().optional(),
   MELHOR_ENVIO_TOKEN: z.string().optional(),
   SHIPPING_ORIGIN_ZIP_CODE: z.string().default('01310-100'),
+  FRONTEND_URL: z.string().default('http://localhost:3001'),
 });
 
 export type Env = z.infer<typeof envSchema>;

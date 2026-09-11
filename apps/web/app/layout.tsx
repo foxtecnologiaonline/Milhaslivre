@@ -1,4 +1,7 @@
 import type { ReactNode } from 'react';
+import { NavHeader } from '../components/nav-header';
+import { AuthProvider } from '../lib/auth-context';
+import './globals.css';
 
 export const metadata = {
   title: 'Marketplace',
@@ -8,7 +11,12 @@ export const metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="pt-BR">
-      <body>{children}</body>
+      <body>
+        <AuthProvider>
+          <NavHeader />
+          <main className="container">{children}</main>
+        </AuthProvider>
+      </body>
     </html>
   );
 }

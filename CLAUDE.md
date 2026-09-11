@@ -50,7 +50,7 @@ precisa migrar antes).
 9. [x] Módulo `shipping`: cotação de frete por `SubOrder` no checkout + etiqueta pós-pagamento
 10. [x] Módulo `orders`: status por `SubOrder` (pending → paid → shipped → delivered), evento por transição
 11. [x] Módulo `reviews`: liberado só após `delivered`
-12. [ ] Storefront Next.js: home, busca, página de produto, carrinho, checkout
+12. [x] Storefront Next.js: home, busca, página de produto, carrinho, checkout
 13. [ ] Painel seller: cadastro de produto, listagem de pedidos
 14. [ ] Painel admin: aprovação de seller, moderação de catálogo
 
@@ -336,7 +336,45 @@ npm run build                # build de produção em api e web
       real: checkout → review bloqueada (409) → pago (webhook) → shipped →
       delivered → review de produto e de seller aceitas → duplicata
       bloqueada → listagem pública.
-- [ ] Itens 12–14: pendentes (storefront, painel seller, painel admin — Next.js).
+- [x] Item 12 do backlog: storefront `apps/web` (Next.js App Router) — home
+      (`/`, busca por `GET /products?query=`), página de produto (`/products/:id`,
+      ofertas ordenadas por preço + reviews), carrinho (`/cart`, remover item,
+      "Finalizar compra" → `POST /checkout`), página de pedido (`/orders/:id`,
+      status por `SubOrder`, botão "Pagar com Pix" → `POST /payments/charge`
+      com `Idempotency-Key` gerada uma vez via `crypto.randomUUID()`),
+      login/registro (`/login`, `/register`). Camada de API centralizada em
+      `lib/api-client.ts` (`apiFetch<T>`, `ApiError` com `status`/`message`,
+      injeta `Authorization`/`Idempotency-Key`) e autenticação em
+      `lib/auth-context.tsx` (`AuthProvider`/`useAuth`, sessão persistida em
+      `localStorage`, sem cookie/SSR de sessão neste MVP). `NavHeader` já expõe
+      links para `/seller` e `/admin` (roles `seller`/`admin`) — rotas ainda
+      não implementadas, ficam para os itens 13/14. Backend ganhou
+      `app.enableCors({ origin: FRONTEND_URL, credentials: true })` em
+      `main.ts` (nova env var `FRONTEND_URL`, default
+      `http://localhost:3001`) — sem isso o browser bloqueia toda chamada do
+      storefront à API por causa da política de mesma origem. Testes:
+      unitários de `apiFetch` (happy path, `ApiError` no erro do servidor,
+      header `Idempotency-Key`) via vitest. Validado manualmente ponta a
+      ponta num browser real (Playwright/Chromium, não só os testes
+      unitários): subi Postgres + API (`node dist/main.js`) + storefront
+      (`next dev -p 3001`) de verdade, semeei um seller aprovado com 2
+      produtos via curl, e percorri o fluxo completo na UI — home lista os 2
+      produtos → cadastro de comprador → página de produto → adicionar ao
+      carrinho → carrinho mostra o item e o total corretos → "Finalizar
+      compra" cria o `Order` e redireciona para `/orders/:id` → "Pagar com
+      Pix" chama `POST /payments/charge` com sucesso. O pedido permanece
+      `pending` após o pagamento porque não há `PAGARME_API_KEY` neste
+      ambiente (no-op documentado no item 8: grava o pagamento como
+      `pending`, não confirma `paid` sem uma cobrança real ou webhook) — não
+      é um bug do storefront, é o mesmo comportamento sem gateway já usado
+      nos outros módulos. Esse teste ponta a ponta pegou e corrigiu um bug
+      real de configuração: o CORS tinha sido adicionado ao `main.ts` mas a
+      API rodando ainda era o `dist/main.js` de antes da mudança — só depois
+      de rebuildar (`npm run build -w apps/api`) e reiniciar o processo o
+      `OPTIONS /products` passou a responder com
+      `Access-Control-Allow-Origin` e o browser parou de bloquear as
+      chamadas.
+- [ ] Itens 13–14: pendentes (painel seller, painel admin).
 
 Infra compartilhada criada junto do item 2 (reaproveitável pelos próximos
 módulos): `ConfigModule` com validação Zod de env vars (`src/config/env.schema.ts`),
@@ -346,4 +384,4 @@ token `PG_POOL`), e um runner de migração idempotente
 `migrations/<módulo>/*.sql`, tracked via `public.schema_migrations`). CI roda as
 migrations contra um serviço Postgres antes dos testes.
 
-**Última atualização**: 2026-09-10
+**Última atualização**: 2026-09-11
