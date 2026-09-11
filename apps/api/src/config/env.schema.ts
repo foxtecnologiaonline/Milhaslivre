@@ -7,6 +7,8 @@ export const envSchema = z.object({
   JWT_SECRET: z.string().min(16, 'JWT_SECRET must be at least 16 characters'),
   JWT_EXPIRY: z.string().default('24h'),
   REFRESH_TOKEN_EXPIRY_DAYS: z.coerce.number().int().positive().default(30),
+  PAGARME_API_KEY: z.string().optional(),
+  PAGARME_WEBHOOK_SECRET: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

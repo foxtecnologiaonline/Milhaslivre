@@ -9,6 +9,7 @@ export interface SellerRecord {
   rejectedReason: string | null;
   createdAt: Date;
   approvedAt: Date | null;
+  recipientId: string | null;
 }
 
 export interface CreateSellerInput {
@@ -28,4 +29,5 @@ export interface SellerRepository {
     status: SellerStatus,
     rejectedReason: string | null,
   ): Promise<SellerRecord>;
+  attachRecipient(id: string, recipientId: string): Promise<SellerRecord>;
 }

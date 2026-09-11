@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CartService } from '../cart/cart.service';
 import type { AddCartItemInput, CartItemRecord, CartRepository } from '../cart/cart.repository';
 import { CatalogService } from '../catalog/catalog.service';
@@ -171,6 +172,22 @@ class InMemoryOrderRepository implements OrderRepository {
     this.orders.push(order);
     return order;
   }
+
+  async findById(id: string) {
+    return this.orders.find((o) => o.id === id) ?? null;
+  }
+
+  async markOrderConfirmed(id: string) {
+    const order = this.orders.find((o) => o.id === id);
+    if (order) order.status = 'confirmed';
+  }
+
+  async markSubOrderPaid(id: string) {
+    for (const order of this.orders) {
+      const subOrder = order.subOrders.find((so) => so.id === id);
+      if (subOrder) subOrder.status = 'paid';
+    }
+  }
 }
 
 function buildCheckout() {
@@ -182,7 +199,7 @@ function buildCheckout() {
   const reservationRepository = new InMemoryReservationRepository();
   const inventoryService = new InventoryService(reservationRepository, catalogService, sellerService);
   const orderRepository = new InMemoryOrderRepository();
-  const ordersService = new OrdersService(orderRepository);
+  const ordersService = new OrdersService(orderRepository, new EventEmitter2());
   const checkoutService = new CheckoutService(cartService, inventoryService, ordersService);
 
   return { checkoutService, cartService, offerRepository, cartRepository, reservationRepository };

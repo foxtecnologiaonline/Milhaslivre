@@ -93,6 +93,7 @@ const approvedSeller: SellerRecord = {
   rejectedReason: null,
   createdAt: new Date(),
   approvedAt: new Date(),
+  recipientId: null,
 };
 
 function buildService(sellerOverrides?: Partial<SellerService>) {

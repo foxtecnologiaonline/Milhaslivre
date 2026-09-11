@@ -5,13 +5,17 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { PagarmeService } from '../pagarme/pagarme.service';
 import type { CreateSellerDto } from './dto/create-seller.schema';
 import type { UpdateSellerStatusDto } from './dto/update-seller-status.schema';
 import { SELLER_REPOSITORY, SellerRecord, SellerRepository } from './seller.repository';
 
 @Injectable()
 export class SellerService {
-  constructor(@Inject(SELLER_REPOSITORY) private readonly repository: SellerRepository) {}
+  constructor(
+    @Inject(SELLER_REPOSITORY) private readonly repository: SellerRepository,
+    private readonly pagarmeService: PagarmeService,
+  ) {}
 
   async onboard(userId: string, dto: CreateSellerDto): Promise<SellerRecord> {
     const existing = await this.repository.findByUserId(userId);
@@ -43,7 +47,18 @@ export class SellerService {
       throw new ConflictException(`seller status has already been decided (${seller.status})`);
     }
 
-    return this.repository.updateStatus(id, dto.status, dto.reason ?? null);
+    const updated = await this.repository.updateStatus(id, dto.status, dto.reason ?? null);
+    if (dto.status !== 'approved') {
+      return updated;
+    }
+
+    // Pagar.me split needs a recipient_id per seller; register it now that
+    // they're approved. No-ops (returns null) when PAGARME_API_KEY is unset.
+    const recipientId = await this.pagarmeService.createRecipient({
+      name: updated.companyName,
+      document: updated.document,
+    });
+    return recipientId ? this.repository.attachRecipient(id, recipientId) : updated;
   }
 
   // Exposed for other modules (e.g. catalog) to resolve a seller without reading seller.* directly.

@@ -19,6 +19,18 @@ import {
   ProductRecord,
   ProductRepository,
 } from '../src/catalog/product.repository';
+import { IDEMPOTENCY_REPOSITORY } from '../src/payments/idempotency.repository';
+import type { IdempotencyRecord, IdempotencyRepository } from '../src/payments/idempotency.repository';
+import { PAYMENT_REPOSITORY } from '../src/payments/payment.repository';
+import type { CreatePaymentInput, PaymentRecord, PaymentRepository } from '../src/payments/payment.repository';
+import { SPLIT_TRANSACTION_REPOSITORY } from '../src/payments/split-transaction.repository';
+import type {
+  CreateSplitTransactionInput,
+  SplitTransactionRecord,
+  SplitTransactionRepository,
+} from '../src/payments/split-transaction.repository';
+import { WEBHOOK_EVENT_REPOSITORY } from '../src/payments/webhook-event.repository';
+import type { WebhookEventRepository } from '../src/payments/webhook-event.repository';
 import { RESERVATION_REPOSITORY } from '../src/inventory/reservation.repository';
 import type {
   CreateReservationInput,
@@ -211,16 +223,13 @@ class InMemoryOrderRepository implements OrderRepository {
     this.orders.push(order);
     return order;
   }
-
   async findById(id: string) {
     return this.orders.find((o) => o.id === id) ?? null;
   }
-
   async markOrderConfirmed(id: string) {
     const order = this.orders.find((o) => o.id === id);
     if (order) order.status = 'confirmed';
   }
-
   async markSubOrderPaid(id: string) {
     for (const order of this.orders) {
       const subOrder = order.subOrders.find((so) => so.id === id);
@@ -229,7 +238,60 @@ class InMemoryOrderRepository implements OrderRepository {
   }
 }
 
-describe('Checkout (e2e)', () => {
+class InMemoryPaymentRepository implements PaymentRepository {
+  rows: PaymentRecord[] = [];
+  async insert(input: CreatePaymentInput) {
+    const row: PaymentRecord = { id: randomUUID(), createdAt: new Date(), ...input };
+    this.rows.push(row);
+    return row;
+  }
+  async findLatestByOrderId(orderId: string) {
+    for (let i = this.rows.length - 1; i >= 0; i--) {
+      if (this.rows[i].orderId === orderId) return this.rows[i];
+    }
+    return null;
+  }
+  async findLatestByGatewayId(gatewayId: string) {
+    for (let i = this.rows.length - 1; i >= 0; i--) {
+      if (this.rows[i].gatewayId === gatewayId) return this.rows[i];
+    }
+    return null;
+  }
+}
+
+class InMemorySplitTransactionRepository implements SplitTransactionRepository {
+  rows: SplitTransactionRecord[] = [];
+  async insertMany(inputs: CreateSplitTransactionInput[]) {
+    const created = inputs.map((input) => ({ id: randomUUID(), createdAt: new Date(), ...input }));
+    this.rows.push(...created);
+    return created;
+  }
+  async findByPaymentId(paymentId: string) {
+    return this.rows.filter((r) => r.paymentId === paymentId);
+  }
+}
+
+class InMemoryIdempotencyRepository implements IdempotencyRepository {
+  private map = new Map<string, IdempotencyRecord>();
+  async find(key: string) {
+    return this.map.get(key) ?? null;
+  }
+  async store(key: string, orderId: string, response: unknown) {
+    this.map.set(key, { key, orderId, response });
+  }
+}
+
+class InMemoryWebhookEventRepository implements WebhookEventRepository {
+  private processed = new Set<string>();
+  async wasProcessed(id: string) {
+    return this.processed.has(id);
+  }
+  async markProcessed(id: string) {
+    this.processed.add(id);
+  }
+}
+
+describe('Payments (e2e)', () => {
   let app: INestApplication;
   let jwtService: JwtService;
 
@@ -249,9 +311,17 @@ describe('Checkout (e2e)', () => {
       .useClass(InMemoryReservationRepository)
       .overrideProvider(ORDER_REPOSITORY)
       .useClass(InMemoryOrderRepository)
+      .overrideProvider(PAYMENT_REPOSITORY)
+      .useClass(InMemoryPaymentRepository)
+      .overrideProvider(SPLIT_TRANSACTION_REPOSITORY)
+      .useClass(InMemorySplitTransactionRepository)
+      .overrideProvider(IDEMPOTENCY_REPOSITORY)
+      .useClass(InMemoryIdempotencyRepository)
+      .overrideProvider(WEBHOOK_EVENT_REPOSITORY)
+      .useClass(InMemoryWebhookEventRepository)
       .compile();
 
-    app = moduleFixture.createNestApplication();
+    app = moduleFixture.createNestApplication({ rawBody: true });
     await app.init();
     jwtService = app.get(JwtService);
   });
@@ -264,14 +334,13 @@ describe('Checkout (e2e)', () => {
     return jwtService.sign({ sub, email: `${sub}@example.com`, role });
   }
 
-  async function approvedSellerOffer(sub: string, priceCents: number, stock: number) {
-    const sellerToken = token('seller', sub);
+  async function checkedOutOrder(sub: string) {
+    const sellerToken = token('seller', `${sub}-seller`);
     const onboardRes = await request(app.getHttpServer())
       .post('/sellers')
       .set('Authorization', `Bearer ${sellerToken}`)
       .send({ companyName: `Loja ${sub}`, document: '12345678900' })
       .expect(201);
-
     await request(app.getHttpServer())
       .patch(`/sellers/${onboardRes.body.id}/status`)
       .set('Authorization', `Bearer ${token('admin', 'admin-1')}`)
@@ -283,30 +352,17 @@ describe('Checkout (e2e)', () => {
       .set('Authorization', `Bearer ${sellerToken}`)
       .send({ title: `Produto ${sub}`, description: 'desc' })
       .expect(201);
-
     const offerRes = await request(app.getHttpServer())
       .post(`/products/${productRes.body.id}/offers`)
       .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ priceCents, stock, condition: 'new', slaDays: 3 })
+      .send({ priceCents: 1500, stock: 10, condition: 'new', slaDays: 3 })
       .expect(201);
 
-    return offerRes.body.id as string;
-  }
-
-  it('splits a multi-seller cart into an Order with one SubOrder per seller, on the happy path', async () => {
-    const offerA = await approvedSellerOffer('checkout-seller-a', 1000, 10);
-    const offerB = await approvedSellerOffer('checkout-seller-b', 2000, 10);
-    const buyerToken = token('buyer', 'checkout-buyer-1');
-
+    const buyerToken = token('buyer', `${sub}-buyer`);
     await request(app.getHttpServer())
       .post('/cart/items')
       .set('Authorization', `Bearer ${buyerToken}`)
-      .send({ offerId: offerA, quantity: 2 })
-      .expect(201);
-    await request(app.getHttpServer())
-      .post('/cart/items')
-      .set('Authorization', `Bearer ${buyerToken}`)
-      .send({ offerId: offerB, quantity: 1 })
+      .send({ offerId: offerRes.body.id, quantity: 2 })
       .expect(201);
 
     const checkoutRes = await request(app.getHttpServer())
@@ -314,42 +370,71 @@ describe('Checkout (e2e)', () => {
       .set('Authorization', `Bearer ${buyerToken}`)
       .expect(201);
 
-    expect(checkoutRes.body.subOrders).toHaveLength(2);
-    expect(checkoutRes.body.totalCents).toBe(2 * 1000 + 1 * 2000);
+    return { buyerToken, orderId: checkoutRes.body.id as string };
+  }
 
-    const cartAfter = await request(app.getHttpServer())
-      .get('/cart')
+  it('charges an order (no-op, gateway unconfigured) on the happy path', async () => {
+    const { buyerToken, orderId } = await checkedOutOrder('pay-1');
+
+    const res = await request(app.getHttpServer())
+      .post('/payments/charge')
       .set('Authorization', `Bearer ${buyerToken}`)
-      .expect(200);
-    expect(cartAfter.body).toHaveLength(0);
+      .set('Idempotency-Key', randomUUID())
+      .send({ orderId, method: 'pix' })
+      .expect(201);
+
+    expect(res.body.payment.status).toBe('pending');
+    expect(res.body.splits).toHaveLength(1);
   });
 
-  it('rejects checkout with an empty cart', () => {
+  it('returns the same response for a repeated Idempotency-Key', async () => {
+    const { buyerToken, orderId } = await checkedOutOrder('pay-2');
+    const key = randomUUID();
+
+    const first = await request(app.getHttpServer())
+      .post('/payments/charge')
+      .set('Authorization', `Bearer ${buyerToken}`)
+      .set('Idempotency-Key', key)
+      .send({ orderId, method: 'pix' })
+      .expect(201);
+    const second = await request(app.getHttpServer())
+      .post('/payments/charge')
+      .set('Authorization', `Bearer ${buyerToken}`)
+      .set('Idempotency-Key', key)
+      .send({ orderId, method: 'pix' })
+      .expect(201);
+
+    expect(second.body.payment.id).toBe(first.body.payment.id);
+  });
+
+  it('rejects charging without an Idempotency-Key header', async () => {
+    const { buyerToken, orderId } = await checkedOutOrder('pay-3');
+
     return request(app.getHttpServer())
-      .post('/checkout')
-      .set('Authorization', `Bearer ${token('buyer', 'checkout-buyer-2')}`)
+      .post('/payments/charge')
+      .set('Authorization', `Bearer ${buyerToken}`)
+      .send({ orderId, method: 'pix' })
       .expect(400);
   });
 
-  it('rejects checkout and keeps the cart when stock is insufficient', async () => {
-    const offerId = await approvedSellerOffer('checkout-seller-c', 1000, 1);
-    const buyerToken = token('buyer', 'checkout-buyer-3');
+  it("rejects charging another buyer's order", async () => {
+    const { orderId } = await checkedOutOrder('pay-4');
 
-    await request(app.getHttpServer())
-      .post('/cart/items')
-      .set('Authorization', `Bearer ${buyerToken}`)
-      .send({ offerId, quantity: 5 })
-      .expect(201);
+    return request(app.getHttpServer())
+      .post('/payments/charge')
+      .set('Authorization', `Bearer ${token('buyer', 'someone-else')}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({ orderId, method: 'pix' })
+      .expect(403);
+  });
 
-    await request(app.getHttpServer())
-      .post('/checkout')
-      .set('Authorization', `Bearer ${buyerToken}`)
-      .expect(409);
-
-    const cartAfter = await request(app.getHttpServer())
-      .get('/cart')
-      .set('Authorization', `Bearer ${buyerToken}`)
-      .expect(200);
-    expect(cartAfter.body).toHaveLength(1);
+  it('accepts a webhook and reports it received', () => {
+    return request(app.getHttpServer())
+      .post('/payments/webhook')
+      .send({ id: randomUUID(), type: 'order.paid', data: { id: 'gw_unknown', status: 'paid' } })
+      .expect(200)
+      .expect((res) => {
+        if (res.body.received !== true) throw new Error('expected received: true');
+      });
   });
 });

@@ -1,4 +1,5 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
+import type { PagarmeService } from '../pagarme/pagarme.service';
 import { SellerService } from './seller.service';
 import type { CreateSellerInput, SellerRecord, SellerRepository } from './seller.repository';
 import type { SellerStatus } from './types';
@@ -25,6 +26,7 @@ class InMemorySellerRepository implements SellerRepository {
       rejectedReason: null,
       createdAt: new Date(),
       approvedAt: null,
+      recipientId: null,
     };
     this.sellers.push(seller);
     return seller;
@@ -38,14 +40,30 @@ class InMemorySellerRepository implements SellerRepository {
     seller.approvedAt = status === 'approved' ? new Date() : seller.approvedAt;
     return seller;
   }
+
+  async attachRecipient(id: string, recipientId: string) {
+    const seller = this.sellers.find((s) => s.id === id);
+    if (!seller) throw new Error('not found');
+    seller.recipientId = recipientId;
+    return seller;
+  }
 }
 
 const baseDto = { companyName: 'Loja da Ana', document: '12345678900' };
 
+function buildService(pagarmeOverrides?: Partial<PagarmeService>) {
+  const pagarmeService = {
+    createRecipient: jest.fn().mockResolvedValue(null),
+    ...pagarmeOverrides,
+  } as unknown as PagarmeService;
+
+  return new SellerService(new InMemorySellerRepository(), pagarmeService);
+}
+
 describe('SellerService', () => {
   describe('onboard', () => {
     it('creates a pending seller profile on the happy path', async () => {
-      const service = new SellerService(new InMemorySellerRepository());
+      const service = buildService();
 
       const seller = await service.onboard('user-1', baseDto);
 
@@ -53,7 +71,7 @@ describe('SellerService', () => {
     });
 
     it('rejects a second onboarding for the same user', async () => {
-      const service = new SellerService(new InMemorySellerRepository());
+      const service = buildService();
       await service.onboard('user-1', baseDto);
 
       await expect(service.onboard('user-1', baseDto)).rejects.toBeInstanceOf(ConflictException);
@@ -62,7 +80,7 @@ describe('SellerService', () => {
 
   describe('findById', () => {
     it('returns the seller on the happy path', async () => {
-      const service = new SellerService(new InMemorySellerRepository());
+      const service = buildService();
       const created = await service.onboard('user-1', baseDto);
 
       const found = await service.findById(created.id);
@@ -71,7 +89,7 @@ describe('SellerService', () => {
     });
 
     it('throws when the seller does not exist', async () => {
-      const service = new SellerService(new InMemorySellerRepository());
+      const service = buildService();
 
       await expect(service.findById('missing')).rejects.toBeInstanceOf(NotFoundException);
     });
@@ -79,7 +97,7 @@ describe('SellerService', () => {
 
   describe('updateStatus', () => {
     it('approves a pending seller on the happy path', async () => {
-      const service = new SellerService(new InMemorySellerRepository());
+      const service = buildService();
       const created = await service.onboard('user-1', baseDto);
 
       const updated = await service.updateStatus(created.id, { status: 'approved' });
@@ -88,8 +106,26 @@ describe('SellerService', () => {
       expect(updated.approvedAt).toBeInstanceOf(Date);
     });
 
+    it('registers a Pagar.me recipient when approved and the gateway is configured', async () => {
+      const service = buildService({ createRecipient: jest.fn().mockResolvedValue('rp_123') });
+      const created = await service.onboard('user-1', baseDto);
+
+      const updated = await service.updateStatus(created.id, { status: 'approved' });
+
+      expect(updated.recipientId).toBe('rp_123');
+    });
+
+    it('leaves recipientId null when Pagar.me is not configured (no-op)', async () => {
+      const service = buildService();
+      const created = await service.onboard('user-1', baseDto);
+
+      const updated = await service.updateStatus(created.id, { status: 'approved' });
+
+      expect(updated.recipientId).toBeNull();
+    });
+
     it('rejects updating the status of a seller that already has a decision', async () => {
-      const service = new SellerService(new InMemorySellerRepository());
+      const service = buildService();
       const created = await service.onboard('user-1', baseDto);
       await service.updateStatus(created.id, { status: 'approved' });
 
@@ -99,7 +135,7 @@ describe('SellerService', () => {
     });
 
     it('throws when the seller does not exist', async () => {
-      const service = new SellerService(new InMemorySellerRepository());
+      const service = buildService();
 
       await expect(service.updateStatus('missing', { status: 'approved' })).rejects.toBeInstanceOf(
         NotFoundException,

@@ -17,7 +17,11 @@ interface SellerRow {
   rejected_reason: string | null;
   created_at: Date;
   approved_at: Date | null;
+  recipient_id: string | null;
 }
+
+const SELECT_COLUMNS =
+  'id, user_id, company_name, document, status, rejected_reason, created_at, approved_at, recipient_id';
 
 function mapRow(row: SellerRow): SellerRecord {
   return {
@@ -29,6 +33,7 @@ function mapRow(row: SellerRow): SellerRecord {
     rejectedReason: row.rejected_reason,
     createdAt: row.created_at,
     approvedAt: row.approved_at,
+    recipientId: row.recipient_id,
   };
 }
 
@@ -38,8 +43,7 @@ export class PgSellerRepository implements SellerRepository {
 
   async findById(id: string): Promise<SellerRecord | null> {
     const { rows } = await this.pool.query<SellerRow>(
-      `SELECT id, user_id, company_name, document, status, rejected_reason, created_at, approved_at
-       FROM seller.sellers WHERE id = $1`,
+      `SELECT ${SELECT_COLUMNS} FROM seller.sellers WHERE id = $1`,
       [id],
     );
     return rows[0] ? mapRow(rows[0]) : null;
@@ -47,8 +51,7 @@ export class PgSellerRepository implements SellerRepository {
 
   async findByUserId(userId: string): Promise<SellerRecord | null> {
     const { rows } = await this.pool.query<SellerRow>(
-      `SELECT id, user_id, company_name, document, status, rejected_reason, created_at, approved_at
-       FROM seller.sellers WHERE user_id = $1`,
+      `SELECT ${SELECT_COLUMNS} FROM seller.sellers WHERE user_id = $1`,
       [userId],
     );
     return rows[0] ? mapRow(rows[0]) : null;
@@ -58,7 +61,7 @@ export class PgSellerRepository implements SellerRepository {
     const { rows } = await this.pool.query<SellerRow>(
       `INSERT INTO seller.sellers (user_id, company_name, document)
        VALUES ($1, $2, $3)
-       RETURNING id, user_id, company_name, document, status, rejected_reason, created_at, approved_at`,
+       RETURNING ${SELECT_COLUMNS}`,
       [input.userId, input.companyName, input.document],
     );
     return mapRow(rows[0]);
@@ -76,8 +79,18 @@ export class PgSellerRepository implements SellerRepository {
            approved_at = CASE WHEN $2 = 'approved' THEN now() ELSE approved_at END,
            updated_at = now()
        WHERE id = $1
-       RETURNING id, user_id, company_name, document, status, rejected_reason, created_at, approved_at`,
+       RETURNING ${SELECT_COLUMNS}`,
       [id, status, rejectedReason],
+    );
+    return mapRow(rows[0]);
+  }
+
+  async attachRecipient(id: string, recipientId: string): Promise<SellerRecord> {
+    const { rows } = await this.pool.query<SellerRow>(
+      `UPDATE seller.sellers SET recipient_id = $2, updated_at = now()
+       WHERE id = $1
+       RETURNING ${SELECT_COLUMNS}`,
+      [id, recipientId],
     );
     return mapRow(rows[0]);
   }

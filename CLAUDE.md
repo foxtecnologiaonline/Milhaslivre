@@ -46,7 +46,7 @@ precisa migrar antes).
 5. [x] Módulo `inventory`: reserva/liberação de estoque atômica (lock otimista)
 6. [x] Módulo `cart`: carrinho persistido por buyer, agregando ofertas de múltiplos sellers
 7. [x] Módulo `checkout`: transforma carrinho em `Order` + `SubOrder`s, sem cobrar ainda
-8. [ ] Módulo `payments`: gateway (Pagar.me), split por `SubOrder`, webhook idempotente
+8. [x] Módulo `payments`: gateway (Pagar.me), split por `SubOrder`, webhook idempotente
 9. [ ] Módulo `shipping`: cotação de frete por `SubOrder` no checkout + etiqueta pós-pagamento
 10. [ ] Módulo `orders`: status por `SubOrder` (pending → paid → shipped → delivered), evento por transição
 11. [ ] Módulo `reviews`: liberado só após `delivered`
@@ -133,7 +133,7 @@ npm run build                # build de produção em api e web
       `POST /auth/login`, `POST /auth/refresh`, `GET /me`. JWT (`@nestjs/jwt` +
       `passport-jwt`), RBAC via `Roles`/`RolesGuard`, senha com PBKDF2, refresh
       token hashado (SHA-256) e rotacionado a cada uso. Migration
-      `migrations/identity/001_create_users.sql` (schema `identity`, tabelas
+      `migrations/01-identity/001_create_users.sql` (schema `identity`, tabelas
       `users` e `refresh_tokens`). Testes: unitários do `IdentityService`
       (repositório em memória) + e2e via supertest (repositório em memória) —
       caminho feliz e de erro cobertos em cada endpoint. Validado manualmente
@@ -142,7 +142,7 @@ npm run build                # build de produção em api e web
       `seller`, um perfil por usuário), `GET /sellers/:id` (público),
       `PATCH /sellers/:id/status` (admin, aprova/rejeita um seller `pending`,
       motivo obrigatório ao rejeitar). Migration
-      `migrations/seller/001_create_sellers.sql` (schema `seller`,
+      `migrations/02-seller/001_create_sellers.sql` (schema `seller`,
       `sellers.user_id` com FK para `identity.users`). Testes: unitários do
       `SellerService` + e2e via supertest (repositório em memória) — caminho
       feliz e erros (perfil duplicado, não encontrado, decisão já tomada,
@@ -226,7 +226,39 @@ npm run build                # build de produção em api e web
       estoque insuficiente) + e2e via supertest. Validado manualmente ponta a
       ponta contra um Postgres real, inclusive lendo as linhas de
       `orders.orders`/`sub_orders`/`order_items` direto no banco.
-- [ ] Itens 8–14: pendentes.
+- [x] Item 8 do backlog: módulo `payments` — `POST /payments/charge` (role
+      `buyer`, exige header `Idempotency-Key`; uma chave repetida retorna a
+      mesma resposta em vez de cobrar de novo), `POST /payments/webhook`
+      (público, idempotente pelo `id` do evento do gateway). Integração real
+      com Pagar.me v5 via REST (`src/pagarme/pagarme.service.ts`, Basic Auth
+      com a secret key, `fetch` nativo do Node — sem SDK de terceiro) — **nunca
+      exercida contra os servidores da Pagar.me neste ambiente, por falta de
+      credenciais**; com `PAGARME_API_KEY`/`PAGARME_WEBHOOK_SECRET` ausentes
+      (caso deste ambiente), faz no-op seguro com log, mesmo padrão do projeto
+      anterior com Twilio/SendGrid/Stripe (`charge` grava o pagamento como
+      `pending`, sem cobrar de verdade; `webhook` aceita sem verificar
+      assinatura). Retrofit no `seller`: aprovação agora chama
+      `PagarmeService.createRecipient` e grava `recipient_id`
+      (`migrations/02-seller/002_add_recipient_id.sql`) — lacuna que já estava
+      documentada aqui desde o item 3 e não tinha sido implementada. Tabelas
+      `payments.payments` e `payments.split_transactions`
+      (`migrations/07-payments/001_create_payments.sql`) são **append-only**
+      de verdade: nenhum `UPDATE` de status — cada mudança de estado é uma
+      linha nova (mesmo `order_id`/`gateway_id`/`seller_id`), e o estado
+      "atual" é a última linha por `created_at`. Primeiros domain events reais
+      do projeto: `EventEmitterModule` (`@nestjs/event-emitter`, in-process,
+      "mesmo dentro do monolito" como a regra pede) emite
+      `sub_order.status_changed` a cada `SubOrder` que vira `paid`
+      (`OrdersService.markOrderPaid`, chamado tanto pelo charge síncrono
+      quanto pelo webhook assíncrono). `OrdersModule` ganhou `findById` e
+      `markOrderConfirmed`/`markSubOrderPaid` (ainda sem controller — os
+      endpoints de leitura pública ficam para o item 10). Testes: unitários do
+      `PaymentsService` (no-op sem gateway, split real quando "pago", idempotência
+      de charge e de webhook, seller sem `recipient_id`, assinatura de webhook
+      inválida) + e2e via supertest. Validado manualmente ponta a ponta contra
+      um Postgres real, incluindo o caso "gateway configurado mas seller sem
+      `recipient_id`" (409, sem nem tentar chamar a Pagar.me).
+- [ ] Itens 9–14: pendentes.
 
 Infra compartilhada criada junto do item 2 (reaproveitável pelos próximos
 módulos): `ConfigModule` com validação Zod de env vars (`src/config/env.schema.ts`),

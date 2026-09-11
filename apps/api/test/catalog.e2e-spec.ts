@@ -46,6 +46,7 @@ class InMemorySellerRepository implements SellerRepository {
       rejectedReason: null,
       createdAt: new Date(),
       approvedAt: null,
+      recipientId: null,
     };
     this.sellers.push(seller);
     return seller;
@@ -57,6 +58,13 @@ class InMemorySellerRepository implements SellerRepository {
     seller.status = status;
     seller.rejectedReason = rejectedReason;
     seller.approvedAt = status === 'approved' ? new Date() : seller.approvedAt;
+    return seller;
+  }
+
+  async attachRecipient(id: string, recipientId: string) {
+    const seller = this.sellers.find((s) => s.id === id);
+    if (!seller) throw new Error('not found');
+    seller.recipientId = recipientId;
     return seller;
   }
 }

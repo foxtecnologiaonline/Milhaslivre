@@ -45,4 +45,7 @@ export const ORDER_REPOSITORY = Symbol('ORDER_REPOSITORY');
 
 export interface OrderRepository {
   createOrder(input: CreateOrderInput): Promise<OrderRecord>;
+  findById(id: string): Promise<OrderRecord | null>;
+  markOrderConfirmed(id: string): Promise<void>;
+  markSubOrderPaid(id: string): Promise<void>;
 }

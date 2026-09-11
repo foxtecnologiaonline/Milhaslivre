@@ -109,4 +109,80 @@ export class PgOrderRepository implements OrderRepository {
       client.release();
     }
   }
+
+  async findById(id: string): Promise<OrderRecord | null> {
+    const orderResult = await this.pool.query<{
+      id: string;
+      buyer_id: string;
+      total_cents: number;
+      status: string;
+      created_at: Date;
+    }>(`SELECT id, buyer_id, total_cents, status, created_at FROM orders.orders WHERE id = $1`, [id]);
+    const orderRow = orderResult.rows[0];
+    if (!orderRow) return null;
+
+    const rows = await this.pool.query<{
+      sub_order_id: string;
+      seller_id: string;
+      subtotal_cents: number;
+      shipping_cents: number;
+      sub_order_status: string;
+      item_id: string | null;
+      offer_id: string | null;
+      qty: number | null;
+      unit_price_cents: number | null;
+    }>(
+      `SELECT
+         so.id AS sub_order_id, so.seller_id, so.subtotal_cents, so.shipping_cents, so.status AS sub_order_status,
+         oi.id AS item_id, oi.offer_id, oi.qty, oi.unit_price_cents
+       FROM orders.sub_orders so
+       LEFT JOIN orders.order_items oi ON oi.sub_order_id = so.id
+       WHERE so.order_id = $1
+       ORDER BY so.created_at ASC, oi.id ASC`,
+      [id],
+    );
+
+    const subOrdersById = new Map<string, SubOrderRecord>();
+    for (const row of rows.rows) {
+      let subOrder = subOrdersById.get(row.sub_order_id);
+      if (!subOrder) {
+        subOrder = {
+          id: row.sub_order_id,
+          orderId: id,
+          sellerId: row.seller_id,
+          subtotalCents: row.subtotal_cents,
+          shippingCents: row.shipping_cents,
+          status: row.sub_order_status,
+          items: [],
+        };
+        subOrdersById.set(row.sub_order_id, subOrder);
+      }
+      if (row.item_id) {
+        subOrder.items.push({
+          id: row.item_id,
+          subOrderId: row.sub_order_id,
+          offerId: row.offer_id as string,
+          qty: row.qty as number,
+          unitPriceCents: row.unit_price_cents as number,
+        });
+      }
+    }
+
+    return {
+      id: orderRow.id,
+      buyerId: orderRow.buyer_id,
+      totalCents: orderRow.total_cents,
+      status: orderRow.status,
+      createdAt: orderRow.created_at,
+      subOrders: Array.from(subOrdersById.values()),
+    };
+  }
+
+  async markOrderConfirmed(id: string): Promise<void> {
+    await this.pool.query(`UPDATE orders.orders SET status = 'confirmed' WHERE id = $1`, [id]);
+  }
+
+  async markSubOrderPaid(id: string): Promise<void> {
+    await this.pool.query(`UPDATE orders.sub_orders SET status = 'paid' WHERE id = $1`, [id]);
+  }
 }
