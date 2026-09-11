@@ -17,6 +17,7 @@ import type {
 } from '../inventory/reservation.repository';
 import type { CreateOrderInput, OrderRecord, OrderRepository } from '../orders/order.repository';
 import { OrdersService } from '../orders/orders.service';
+import type { ShippingService } from '../shipping/shipping.service';
 import type { SellerService } from '../seller/seller.service';
 import { CheckoutService } from './checkout.service';
 
@@ -150,7 +151,7 @@ class InMemoryOrderRepository implements OrderRepository {
         orderId,
         sellerId: subOrder.sellerId,
         subtotalCents,
-        shippingCents: 0,
+        shippingCents: subOrder.shippingCents,
         status: 'pending',
         items: subOrder.items.map((item, itemIdx) => ({
           id: `${subOrderId}-item-${itemIdx}`,
@@ -177,6 +178,14 @@ class InMemoryOrderRepository implements OrderRepository {
     return this.orders.find((o) => o.id === id) ?? null;
   }
 
+  async findSubOrderById(id: string) {
+    for (const order of this.orders) {
+      const subOrder = order.subOrders.find((so) => so.id === id);
+      if (subOrder) return subOrder;
+    }
+    return null;
+  }
+
   async markOrderConfirmed(id: string) {
     const order = this.orders.find((o) => o.id === id);
     if (order) order.status = 'confirmed';
@@ -200,7 +209,8 @@ function buildCheckout() {
   const inventoryService = new InventoryService(reservationRepository, catalogService, sellerService);
   const orderRepository = new InMemoryOrderRepository();
   const ordersService = new OrdersService(orderRepository, new EventEmitter2());
-  const checkoutService = new CheckoutService(cartService, inventoryService, ordersService);
+  const shippingService = { quoteForSubOrder: jest.fn().mockResolvedValue(0) } as unknown as ShippingService;
+  const checkoutService = new CheckoutService(cartService, inventoryService, ordersService, shippingService);
 
   return { checkoutService, cartService, offerRepository, cartRepository, reservationRepository };
 }

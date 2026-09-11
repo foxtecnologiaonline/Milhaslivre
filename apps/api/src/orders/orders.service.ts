@@ -1,7 +1,13 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { SUB_ORDER_STATUS_CHANGED, SubOrderStatusChangedEvent } from './order-events';
-import { CreateOrderInput, ORDER_REPOSITORY, OrderRecord, OrderRepository } from './order.repository';
+import {
+  CreateOrderInput,
+  ORDER_REPOSITORY,
+  OrderRecord,
+  OrderRepository,
+  SubOrderRecord,
+} from './order.repository';
 
 @Injectable()
 export class OrdersService {
@@ -22,6 +28,14 @@ export class OrdersService {
     return order;
   }
 
+  async findSubOrderById(id: string): Promise<SubOrderRecord> {
+    const subOrder = await this.repository.findSubOrderById(id);
+    if (!subOrder) {
+      throw new NotFoundException('sub-order not found');
+    }
+    return subOrder;
+  }
+
   // Called by payments once a charge is confirmed paid: confirms the Order
   // and marks every SubOrder paid, emitting one domain event per SubOrder
   // transition (pending -> paid) — even though everything runs in-process
@@ -35,6 +49,7 @@ export class OrdersService {
         subOrderId: subOrder.id,
         orderId: order.id,
         sellerId: subOrder.sellerId,
+        subtotalCents: subOrder.subtotalCents,
         from: subOrder.status,
         to: 'paid',
       };

@@ -2,8 +2,10 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { CartService } from '../cart/cart.service';
 import type { CartItemWithOffer } from '../cart/cart.service';
 import { InventoryService } from '../inventory/inventory.service';
+import type { SubOrderInput } from '../orders/order.repository';
 import type { OrderRecord } from '../orders/order.repository';
 import { OrdersService } from '../orders/orders.service';
+import { ShippingService } from '../shipping/shipping.service';
 
 @Injectable()
 export class CheckoutService {
@@ -11,6 +13,7 @@ export class CheckoutService {
     private readonly cartService: CartService,
     private readonly inventoryService: InventoryService,
     private readonly ordersService: OrdersService,
+    private readonly shippingService: ShippingService,
   ) {}
 
   async checkout(buyerId: string): Promise<OrderRecord> {
@@ -26,10 +29,8 @@ export class CheckoutService {
         reservations.push({ offerId: item.offerId, reservationId: reservation.id });
       }
 
-      const order = await this.ordersService.createOrder({
-        buyerId,
-        subOrders: groupBySeller(cartItems),
-      });
+      const subOrders = await this.quoteSubOrders(groupBySeller(cartItems));
+      const order = await this.ordersService.createOrder({ buyerId, subOrders });
 
       for (const item of cartItems) {
         await this.cartService.removeItem(buyerId, item.id);
@@ -44,6 +45,19 @@ export class CheckoutService {
       );
       throw err;
     }
+  }
+
+  private async quoteSubOrders(
+    groups: Array<{ sellerId: string; items: SubOrderInput['items'] }>,
+  ): Promise<SubOrderInput[]> {
+    return Promise.all(
+      groups.map(async (group) => {
+        const totalQty = group.items.reduce((sum, item) => sum + item.qty, 0);
+        const declaredValueCents = group.items.reduce((sum, item) => sum + item.unitPriceCents * item.qty, 0);
+        const shippingCents = await this.shippingService.quoteForSubOrder(totalQty, declaredValueCents);
+        return { ...group, shippingCents };
+      }),
+    );
   }
 }
 

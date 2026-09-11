@@ -4,6 +4,7 @@ export interface SubOrderStatusChangedEvent {
   subOrderId: string;
   orderId: string;
   sellerId: string;
+  subtotalCents: number;
   from: string;
   to: string;
 }

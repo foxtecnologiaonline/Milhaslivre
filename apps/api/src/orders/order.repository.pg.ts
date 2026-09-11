@@ -13,12 +13,24 @@ function subtotalOf(items: { unitPriceCents: number; qty: number }[]): number {
   return items.reduce((sum, item) => sum + item.unitPriceCents * item.qty, 0);
 }
 
+interface SubOrderRow {
+  id: string;
+  order_id: string;
+  seller_id: string;
+  subtotal_cents: number;
+  shipping_cents: number;
+  status: string;
+}
+
 @Injectable()
 export class PgOrderRepository implements OrderRepository {
   constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
 
   async createOrder(input: CreateOrderInput): Promise<OrderRecord> {
-    const totalCents = input.subOrders.reduce((sum, so) => sum + subtotalOf(so.items), 0);
+    const totalCents = input.subOrders.reduce(
+      (sum, so) => sum + subtotalOf(so.items) + so.shippingCents,
+      0,
+    );
 
     const client = await this.pool.connect();
     try {
@@ -42,18 +54,11 @@ export class PgOrderRepository implements OrderRepository {
       for (const subOrder of input.subOrders) {
         const subtotalCents = subtotalOf(subOrder.items);
 
-        const subOrderResult = await client.query<{
-          id: string;
-          order_id: string;
-          seller_id: string;
-          subtotal_cents: number;
-          shipping_cents: number;
-          status: string;
-        }>(
-          `INSERT INTO orders.sub_orders (order_id, seller_id, subtotal_cents)
-           VALUES ($1, $2, $3)
+        const subOrderResult = await client.query<SubOrderRow>(
+          `INSERT INTO orders.sub_orders (order_id, seller_id, subtotal_cents, shipping_cents)
+           VALUES ($1, $2, $3, $4)
            RETURNING id, order_id, seller_id, subtotal_cents, shipping_cents, status`,
-          [orderRow.id, subOrder.sellerId, subtotalCents],
+          [orderRow.id, subOrder.sellerId, subtotalCents, subOrder.shippingCents],
         );
         const subOrderRow = subOrderResult.rows[0];
 
@@ -175,6 +180,44 @@ export class PgOrderRepository implements OrderRepository {
       status: orderRow.status,
       createdAt: orderRow.created_at,
       subOrders: Array.from(subOrdersById.values()),
+    };
+  }
+
+  async findSubOrderById(id: string): Promise<SubOrderRecord | null> {
+    const subOrderResult = await this.pool.query<SubOrderRow>(
+      `SELECT id, order_id, seller_id, subtotal_cents, shipping_cents, status
+       FROM orders.sub_orders WHERE id = $1`,
+      [id],
+    );
+    const subOrderRow = subOrderResult.rows[0];
+    if (!subOrderRow) return null;
+
+    const itemRows = await this.pool.query<{
+      id: string;
+      sub_order_id: string;
+      offer_id: string;
+      qty: number;
+      unit_price_cents: number;
+    }>(
+      `SELECT id, sub_order_id, offer_id, qty, unit_price_cents
+       FROM orders.order_items WHERE sub_order_id = $1`,
+      [id],
+    );
+
+    return {
+      id: subOrderRow.id,
+      orderId: subOrderRow.order_id,
+      sellerId: subOrderRow.seller_id,
+      subtotalCents: subOrderRow.subtotal_cents,
+      shippingCents: subOrderRow.shipping_cents,
+      status: subOrderRow.status,
+      items: itemRows.rows.map((row) => ({
+        id: row.id,
+        subOrderId: row.sub_order_id,
+        offerId: row.offer_id,
+        qty: row.qty,
+        unitPriceCents: row.unit_price_cents,
+      })),
     };
   }
 

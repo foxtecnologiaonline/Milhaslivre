@@ -6,6 +6,7 @@ export interface OrderItemInput {
 
 export interface SubOrderInput {
   sellerId: string;
+  shippingCents: number;
   items: OrderItemInput[];
 }
 
@@ -46,6 +47,7 @@ export const ORDER_REPOSITORY = Symbol('ORDER_REPOSITORY');
 export interface OrderRepository {
   createOrder(input: CreateOrderInput): Promise<OrderRecord>;
   findById(id: string): Promise<OrderRecord | null>;
+  findSubOrderById(id: string): Promise<SubOrderRecord | null>;
   markOrderConfirmed(id: string): Promise<void>;
   markSubOrderPaid(id: string): Promise<void>;
 }

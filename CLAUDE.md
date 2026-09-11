@@ -47,7 +47,7 @@ precisa migrar antes).
 6. [x] Módulo `cart`: carrinho persistido por buyer, agregando ofertas de múltiplos sellers
 7. [x] Módulo `checkout`: transforma carrinho em `Order` + `SubOrder`s, sem cobrar ainda
 8. [x] Módulo `payments`: gateway (Pagar.me), split por `SubOrder`, webhook idempotente
-9. [ ] Módulo `shipping`: cotação de frete por `SubOrder` no checkout + etiqueta pós-pagamento
+9. [x] Módulo `shipping`: cotação de frete por `SubOrder` no checkout + etiqueta pós-pagamento
 10. [ ] Módulo `orders`: status por `SubOrder` (pending → paid → shipped → delivered), evento por transição
 11. [ ] Módulo `reviews`: liberado só após `delivered`
 12. [ ] Storefront Next.js: home, busca, página de produto, carrinho, checkout
@@ -258,7 +258,36 @@ npm run build                # build de produção em api e web
       inválida) + e2e via supertest. Validado manualmente ponta a ponta contra
       um Postgres real, incluindo o caso "gateway configurado mas seller sem
       `recipient_id`" (409, sem nem tentar chamar a Pagar.me).
-- [ ] Itens 9–14: pendentes.
+- [x] Item 9 do backlog: módulo `shipping` — `POST /shipping/quote` (qualquer
+      usuário autenticado, recebe `toZipCode` real do chamador),
+      `POST /shipping/label` (role `seller`/`admin`; só gera etiqueta para um
+      `SubOrder` já `paid`; idempotente — chamar duas vezes retorna o mesmo
+      `shipment`), `GET /shipping/:id/tracking`. Integração real com Melhor
+      Envio v2 REST (`src/melhorenvio/melhorenvio.service.ts`, Bearer token,
+      `fetch` nativo, sem SDK de terceiro) — mesmo aviso do Pagar.me: **nunca
+      exercida contra os servidores da Melhor Envio neste ambiente**; sem
+      `MELHOR_ENVIO_TOKEN` faz no-op seguro (cotação R$0, sem gerar etiqueta
+      de verdade). Segundo consumidor real do evento `sub_order.status_changed`
+      (o primeiro foi o próprio log de auditoria implícito do item 8):
+      `ShippingService.handleSubOrderPaid` (`@OnEvent`) gera a etiqueta
+      automaticamente assim que um `SubOrder` vira `paid` — **validado ao
+      vivo** contra Postgres real (não só nos testes): simulei um webhook de
+      pagamento e confirmei a `orders.sub_orders.status='paid'` E a linha em
+      `shipping.shipments` aparecendo automaticamente, sem chamada manual,
+      provando que a cadeia evento→listener funciona de verdade dentro do
+      processo Nest, não só isolada em teste unitário. `checkout` agora chama
+      `ShippingService.quoteForSubOrder` para preencher
+      `sub_orders.shipping_cents` (antes sempre 0) — como não existe ainda
+      cadastro de endereço do buyer nem peso de produto (fora do escopo
+      destes endpoints), a cotação usa um CEP de destino e peso placeholder,
+      documentado no código (`shipping.service.ts`). `OrdersModule` ganhou
+      `findSubOrderById` (necessário para `shipping` validar dono + status
+      antes de gerar etiqueta) e `SubOrderInput`/`CreateOrderInput` passaram a
+      carregar `shippingCents` de verdade (antes hardcoded em 0). Migration
+      `migrations/08-shipping/001_create_shipments.sql`. Testes: unitários do
+      `ShippingService` (no-op sem gateway, idempotência do label, dono vs.
+      não-dono, sub-order não pago, listener de evento) + e2e via supertest.
+- [ ] Itens 10–14: pendentes.
 
 Infra compartilhada criada junto do item 2 (reaproveitável pelos próximos
 módulos): `ConfigModule` com validação Zod de env vars (`src/config/env.schema.ts`),

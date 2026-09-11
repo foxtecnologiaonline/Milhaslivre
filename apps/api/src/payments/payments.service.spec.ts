@@ -29,7 +29,7 @@ class InMemoryOrderRepository implements OrderRepository {
         orderId,
         sellerId: subOrder.sellerId,
         subtotalCents,
-        shippingCents: 0,
+        shippingCents: subOrder.shippingCents,
         status: 'pending',
         items: subOrder.items.map((item, itemIdx) => ({
           id: `${subOrderId}-item-${itemIdx}`,
@@ -43,7 +43,7 @@ class InMemoryOrderRepository implements OrderRepository {
     const order: OrderRecord = {
       id: orderId,
       buyerId: input.buyerId,
-      totalCents: subOrders.reduce((sum, so) => sum + so.subtotalCents, 0),
+      totalCents: subOrders.reduce((sum, so) => sum + so.subtotalCents + so.shippingCents, 0),
       status: 'pending',
       createdAt: new Date(),
       subOrders,
@@ -54,6 +54,14 @@ class InMemoryOrderRepository implements OrderRepository {
 
   async findById(id: string) {
     return this.orders.find((o) => o.id === id) ?? null;
+  }
+
+  async findSubOrderById(id: string) {
+    for (const order of this.orders) {
+      const subOrder = order.subOrders.find((so) => so.id === id);
+      if (subOrder) return subOrder;
+    }
+    return null;
   }
 
   async markOrderConfirmed(id: string) {
@@ -223,7 +231,9 @@ async function seedOrder(
   sellerRepository.seed({ id: sellerId, recipientId });
   return orderRepository.createOrder({
     buyerId: opts.buyerId,
-    subOrders: [{ sellerId, items: [{ offerId: 'offer-1', qty: 1, unitPriceCents: opts.amountCents }] }],
+    subOrders: [
+      { sellerId, shippingCents: 0, items: [{ offerId: 'offer-1', qty: 1, unitPriceCents: opts.amountCents }] },
+    ],
   });
 }
 

@@ -34,9 +34,15 @@ import {
   SellerRepository,
 } from '../src/seller/seller.repository';
 import type { SellerStatus } from '../src/seller/types';
+import { SHIPMENT_REPOSITORY } from '../src/shipping/shipment.repository';
+import type {
+  CreateShipmentInput,
+  ShipmentRecord,
+  ShipmentRepository,
+} from '../src/shipping/shipment.repository';
 
 class InMemorySellerRepository implements SellerRepository {
-  private sellers: SellerRecord[] = [];
+  sellers: SellerRecord[] = [];
   async findById(id: string) {
     return this.sellers.find((s) => s.id === id) ?? null;
   }
@@ -211,11 +217,9 @@ class InMemoryOrderRepository implements OrderRepository {
     this.orders.push(order);
     return order;
   }
-
   async findById(id: string) {
     return this.orders.find((o) => o.id === id) ?? null;
   }
-
   async findSubOrderById(id: string) {
     for (const order of this.orders) {
       const subOrder = order.subOrders.find((so) => so.id === id);
@@ -223,12 +227,10 @@ class InMemoryOrderRepository implements OrderRepository {
     }
     return null;
   }
-
   async markOrderConfirmed(id: string) {
     const order = this.orders.find((o) => o.id === id);
     if (order) order.status = 'confirmed';
   }
-
   async markSubOrderPaid(id: string) {
     for (const order of this.orders) {
       const subOrder = order.subOrders.find((so) => so.id === id);
@@ -237,11 +239,29 @@ class InMemoryOrderRepository implements OrderRepository {
   }
 }
 
-describe('Checkout (e2e)', () => {
+class InMemoryShipmentRepository implements ShipmentRepository {
+  shipments: ShipmentRecord[] = [];
+  async findById(id: string) {
+    return this.shipments.find((s) => s.id === id) ?? null;
+  }
+  async findBySubOrderId(subOrderId: string) {
+    return this.shipments.find((s) => s.subOrderId === subOrderId) ?? null;
+  }
+  async create(input: CreateShipmentInput) {
+    const shipment: ShipmentRecord = { id: randomUUID(), createdAt: new Date(), ...input };
+    this.shipments.push(shipment);
+    return shipment;
+  }
+}
+
+describe('Shipping (e2e)', () => {
   let app: INestApplication;
   let jwtService: JwtService;
+  let orderRepository: InMemoryOrderRepository;
 
   beforeAll(async () => {
+    orderRepository = new InMemoryOrderRepository();
+
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     })
@@ -256,7 +276,9 @@ describe('Checkout (e2e)', () => {
       .overrideProvider(RESERVATION_REPOSITORY)
       .useClass(InMemoryReservationRepository)
       .overrideProvider(ORDER_REPOSITORY)
-      .useClass(InMemoryOrderRepository)
+      .useValue(orderRepository)
+      .overrideProvider(SHIPMENT_REPOSITORY)
+      .useClass(InMemoryShipmentRepository)
       .compile();
 
     app = moduleFixture.createNestApplication();
@@ -272,14 +294,13 @@ describe('Checkout (e2e)', () => {
     return jwtService.sign({ sub, email: `${sub}@example.com`, role });
   }
 
-  async function approvedSellerOffer(sub: string, priceCents: number, stock: number) {
-    const sellerToken = token('seller', sub);
+  async function paidSubOrder(sub: string) {
+    const sellerToken = token('seller', `${sub}-seller`);
     const onboardRes = await request(app.getHttpServer())
       .post('/sellers')
       .set('Authorization', `Bearer ${sellerToken}`)
       .send({ companyName: `Loja ${sub}`, document: '12345678900' })
       .expect(201);
-
     await request(app.getHttpServer())
       .patch(`/sellers/${onboardRes.body.id}/status`)
       .set('Authorization', `Bearer ${token('admin', 'admin-1')}`)
@@ -291,73 +312,119 @@ describe('Checkout (e2e)', () => {
       .set('Authorization', `Bearer ${sellerToken}`)
       .send({ title: `Produto ${sub}`, description: 'desc' })
       .expect(201);
-
     const offerRes = await request(app.getHttpServer())
       .post(`/products/${productRes.body.id}/offers`)
       .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ priceCents, stock, condition: 'new', slaDays: 3 })
+      .send({ priceCents: 2000, stock: 10, condition: 'new', slaDays: 3 })
       .expect(201);
 
-    return offerRes.body.id as string;
-  }
-
-  it('splits a multi-seller cart into an Order with one SubOrder per seller, on the happy path', async () => {
-    const offerA = await approvedSellerOffer('checkout-seller-a', 1000, 10);
-    const offerB = await approvedSellerOffer('checkout-seller-b', 2000, 10);
-    const buyerToken = token('buyer', 'checkout-buyer-1');
-
+    const buyerToken = token('buyer', `${sub}-buyer`);
     await request(app.getHttpServer())
       .post('/cart/items')
       .set('Authorization', `Bearer ${buyerToken}`)
-      .send({ offerId: offerA, quantity: 2 })
+      .send({ offerId: offerRes.body.id, quantity: 1 })
       .expect(201);
-    await request(app.getHttpServer())
-      .post('/cart/items')
-      .set('Authorization', `Bearer ${buyerToken}`)
-      .send({ offerId: offerB, quantity: 1 })
-      .expect(201);
-
     const checkoutRes = await request(app.getHttpServer())
       .post('/checkout')
       .set('Authorization', `Bearer ${buyerToken}`)
       .expect(201);
 
-    expect(checkoutRes.body.subOrders).toHaveLength(2);
-    expect(checkoutRes.body.totalCents).toBe(2 * 1000 + 1 * 2000);
+    const subOrderId = checkoutRes.body.subOrders[0].id as string;
+    // Mark paid directly — the payments <-> shipping integration is covered
+    // in payments.e2e-spec.ts; this test focuses on shipping's own rules.
+    orderRepository.orders.find((o) => o.id === checkoutRes.body.id)!.subOrders[0].status = 'paid';
 
-    const cartAfter = await request(app.getHttpServer())
-      .get('/cart')
-      .set('Authorization', `Bearer ${buyerToken}`)
+    return { sellerToken, sellerId: onboardRes.body.id as string, subOrderId };
+  }
+
+  it('quotes shipping (no-op, gateway unconfigured) on the happy path', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/shipping/quote')
+      .set('Authorization', `Bearer ${token('buyer', 'ship-buyer-1')}`)
+      .send({ toZipCode: '20040-020', weightGrams: 500, declaredValueCents: 10000 })
+      .expect(201);
+
+    expect(res.body).toEqual({ carrierId: null, carrierName: null, priceCents: 0, etaDays: null });
+  });
+
+  it('generates a label for a paid sub-order and is idempotent, on the happy path', async () => {
+    const { sellerToken, subOrderId } = await paidSubOrder('ship-1');
+
+    const first = await request(app.getHttpServer())
+      .post('/shipping/label')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ subOrderId })
+      .expect(201);
+    expect(first.body.subOrderId).toBe(subOrderId);
+
+    const second = await request(app.getHttpServer())
+      .post('/shipping/label')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ subOrderId })
+      .expect(201);
+    expect(second.body.id).toBe(first.body.id);
+
+    const tracking = await request(app.getHttpServer())
+      .get(`/shipping/${first.body.id}/tracking`)
+      .set('Authorization', `Bearer ${sellerToken}`)
       .expect(200);
-    expect(cartAfter.body).toHaveLength(0);
+    expect(tracking.body.status).toBe('label_generated');
   });
 
-  it('rejects checkout with an empty cart', () => {
+  it("rejects a seller generating a label for another seller's sub-order", async () => {
+    const { subOrderId } = await paidSubOrder('ship-2');
+
     return request(app.getHttpServer())
-      .post('/checkout')
-      .set('Authorization', `Bearer ${token('buyer', 'checkout-buyer-2')}`)
-      .expect(400);
+      .post('/shipping/label')
+      .set('Authorization', `Bearer ${token('seller', 'someone-else')}`)
+      .send({ subOrderId })
+      .expect(403);
   });
 
-  it('rejects checkout and keeps the cart when stock is insufficient', async () => {
-    const offerId = await approvedSellerOffer('checkout-seller-c', 1000, 1);
-    const buyerToken = token('buyer', 'checkout-buyer-3');
-
+  it('rejects generating a label before the sub-order is paid', async () => {
+    const sellerToken = token('seller', 'ship-3-seller');
+    const onboardRes = await request(app.getHttpServer())
+      .post('/sellers')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ companyName: 'Loja ship-3', document: '12345678900' })
+      .expect(201);
+    await request(app.getHttpServer())
+      .patch(`/sellers/${onboardRes.body.id}/status`)
+      .set('Authorization', `Bearer ${token('admin', 'admin-1')}`)
+      .send({ status: 'approved' })
+      .expect(200);
+    const productRes = await request(app.getHttpServer())
+      .post('/products')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Produto ship-3', description: 'desc' })
+      .expect(201);
+    const offerRes = await request(app.getHttpServer())
+      .post(`/products/${productRes.body.id}/offers`)
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ priceCents: 2000, stock: 10, condition: 'new', slaDays: 3 })
+      .expect(201);
+    const buyerToken = token('buyer', 'ship-3-buyer');
     await request(app.getHttpServer())
       .post('/cart/items')
       .set('Authorization', `Bearer ${buyerToken}`)
-      .send({ offerId, quantity: 5 })
+      .send({ offerId: offerRes.body.id, quantity: 1 })
       .expect(201);
-
-    await request(app.getHttpServer())
+    const checkoutRes = await request(app.getHttpServer())
       .post('/checkout')
       .set('Authorization', `Bearer ${buyerToken}`)
-      .expect(409);
+      .expect(201);
 
-    const cartAfter = await request(app.getHttpServer())
-      .get('/cart')
-      .set('Authorization', `Bearer ${buyerToken}`)
-      .expect(200);
-    expect(cartAfter.body).toHaveLength(1);
+    return request(app.getHttpServer())
+      .post('/shipping/label')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ subOrderId: checkoutRes.body.subOrders[0].id })
+      .expect(403);
+  });
+
+  it('returns 404 for tracking of an unknown shipment', () => {
+    return request(app.getHttpServer())
+      .get(`/shipping/${randomUUID()}/tracking`)
+      .set('Authorization', `Bearer ${token('buyer', 'ship-4-buyer')}`)
+      .expect(404);
   });
 });
