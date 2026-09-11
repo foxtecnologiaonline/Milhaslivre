@@ -48,7 +48,7 @@ precisa migrar antes).
 7. [x] Módulo `checkout`: transforma carrinho em `Order` + `SubOrder`s, sem cobrar ainda
 8. [x] Módulo `payments`: gateway (Pagar.me), split por `SubOrder`, webhook idempotente
 9. [x] Módulo `shipping`: cotação de frete por `SubOrder` no checkout + etiqueta pós-pagamento
-10. [ ] Módulo `orders`: status por `SubOrder` (pending → paid → shipped → delivered), evento por transição
+10. [x] Módulo `orders`: status por `SubOrder` (pending → paid → shipped → delivered), evento por transição
 11. [ ] Módulo `reviews`: liberado só após `delivered`
 12. [ ] Storefront Next.js: home, busca, página de produto, carrinho, checkout
 13. [ ] Painel seller: cadastro de produto, listagem de pedidos
@@ -287,7 +287,33 @@ npm run build                # build de produção em api e web
       `migrations/08-shipping/001_create_shipments.sql`. Testes: unitários do
       `ShippingService` (no-op sem gateway, idempotência do label, dono vs.
       não-dono, sub-order não pago, listener de evento) + e2e via supertest.
-- [ ] Itens 10–14: pendentes.
+- [x] Item 10 do backlog: módulo `orders` (completo) — `GET /orders/:id`
+      (buyer dono ou admin — "o comprador vê o Order consolidado"),
+      `GET /sellers/:id/orders` (o próprio seller ou admin — "o seller vê só
+      seu(s) SubOrder", retorna só os `SubOrder`s daquele seller, não o
+      `Order` inteiro), `PATCH /suborders/:id/status` (seller dono ou admin;
+      só aceita `shipped`/`delivered` — nunca `paid`, que só `payments` pode
+      setar, senão um seller poderia se autodeclarar pago). Transições
+      ilegais (`pending→shipped`, `delivered→qualquer coisa`) são bloqueadas
+      com 409 antes de tocar no banco. Toda transição (inclusive a
+      `pending→paid` já existente desde o item 8) emite
+      `sub_order.status_changed`. Valendo a "regra de ouro" na prática: o
+      teste unitário pegou um bug real na emissão do evento —
+      `OrdersService` lia `subOrder.status` **depois** de chamar
+      `repository.updateSubOrderStatus(...)`, então se o repositório
+      mutasse o mesmo objeto em memória (como os fakes de teste fazem) em
+      vez de devolver um novo, o evento saía com `from` igual a `to`; corrigido
+      capturando o status anterior antes da chamada, tanto em
+      `transitionSubOrderStatus` quanto em `markOrderPaid`. `OrderRepository`
+      trocou `markSubOrderPaid` (fixo em "paid") por `updateSubOrderStatus`
+      (genérico) e ganhou `findSubOrdersBySellerId`. Testes: unitários do
+      `OrdersService` (owned pela primeira vez por um `orders.service.spec.ts`
+      dedicado — antes só era exercitado indiretamente via `checkout`/`payments`)
+      + e2e via supertest. Validado manualmente ponta a ponta contra um
+      Postgres real: checkout → tentativa de `shipped` antes de pago (409) →
+      pagamento via webhook simulado → `GET /sellers/:id/orders` já reflete
+      `paid` → `shipped` → `delivered`.
+- [ ] Itens 11–14: pendentes.
 
 Infra compartilhada criada junto do item 2 (reaproveitável pelos próximos
 módulos): `ConfigModule` com validação Zod de env vars (`src/config/env.schema.ts`),

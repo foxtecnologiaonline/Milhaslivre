@@ -48,6 +48,7 @@ export interface OrderRepository {
   createOrder(input: CreateOrderInput): Promise<OrderRecord>;
   findById(id: string): Promise<OrderRecord | null>;
   findSubOrderById(id: string): Promise<SubOrderRecord | null>;
+  findSubOrdersBySellerId(sellerId: string): Promise<SubOrderRecord[]>;
   markOrderConfirmed(id: string): Promise<void>;
-  markSubOrderPaid(id: string): Promise<void>;
+  updateSubOrderStatus(id: string, status: string): Promise<SubOrderRecord>;
 }

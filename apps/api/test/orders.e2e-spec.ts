@@ -19,18 +19,6 @@ import {
   ProductRecord,
   ProductRepository,
 } from '../src/catalog/product.repository';
-import { IDEMPOTENCY_REPOSITORY } from '../src/payments/idempotency.repository';
-import type { IdempotencyRecord, IdempotencyRepository } from '../src/payments/idempotency.repository';
-import { PAYMENT_REPOSITORY } from '../src/payments/payment.repository';
-import type { CreatePaymentInput, PaymentRecord, PaymentRepository } from '../src/payments/payment.repository';
-import { SPLIT_TRANSACTION_REPOSITORY } from '../src/payments/split-transaction.repository';
-import type {
-  CreateSplitTransactionInput,
-  SplitTransactionRecord,
-  SplitTransactionRepository,
-} from '../src/payments/split-transaction.repository';
-import { WEBHOOK_EVENT_REPOSITORY } from '../src/payments/webhook-event.repository';
-import type { WebhookEventRepository } from '../src/payments/webhook-event.repository';
 import { RESERVATION_REPOSITORY } from '../src/inventory/reservation.repository';
 import type {
   CreateReservationInput,
@@ -48,7 +36,7 @@ import {
 import type { SellerStatus } from '../src/seller/types';
 
 class InMemorySellerRepository implements SellerRepository {
-  private sellers: SellerRecord[] = [];
+  sellers: SellerRecord[] = [];
   async findById(id: string) {
     return this.sellers.find((s) => s.id === id) ?? null;
   }
@@ -233,6 +221,9 @@ class InMemoryOrderRepository implements OrderRepository {
     }
     return null;
   }
+  async findSubOrdersBySellerId(sellerId: string) {
+    return this.orders.flatMap((order) => order.subOrders.filter((so) => so.sellerId === sellerId));
+  }
   async markOrderConfirmed(id: string) {
     const order = this.orders.find((o) => o.id === id);
     if (order) order.status = 'confirmed';
@@ -247,70 +238,16 @@ class InMemoryOrderRepository implements OrderRepository {
     }
     throw new Error('sub-order not found');
   }
-
-  async findSubOrdersBySellerId(sellerId: string) {
-    return this.orders.flatMap((order) => order.subOrders.filter((so) => so.sellerId === sellerId));
-  }
 }
 
-class InMemoryPaymentRepository implements PaymentRepository {
-  rows: PaymentRecord[] = [];
-  async insert(input: CreatePaymentInput) {
-    const row: PaymentRecord = { id: randomUUID(), createdAt: new Date(), ...input };
-    this.rows.push(row);
-    return row;
-  }
-  async findLatestByOrderId(orderId: string) {
-    for (let i = this.rows.length - 1; i >= 0; i--) {
-      if (this.rows[i].orderId === orderId) return this.rows[i];
-    }
-    return null;
-  }
-  async findLatestByGatewayId(gatewayId: string) {
-    for (let i = this.rows.length - 1; i >= 0; i--) {
-      if (this.rows[i].gatewayId === gatewayId) return this.rows[i];
-    }
-    return null;
-  }
-}
-
-class InMemorySplitTransactionRepository implements SplitTransactionRepository {
-  rows: SplitTransactionRecord[] = [];
-  async insertMany(inputs: CreateSplitTransactionInput[]) {
-    const created = inputs.map((input) => ({ id: randomUUID(), createdAt: new Date(), ...input }));
-    this.rows.push(...created);
-    return created;
-  }
-  async findByPaymentId(paymentId: string) {
-    return this.rows.filter((r) => r.paymentId === paymentId);
-  }
-}
-
-class InMemoryIdempotencyRepository implements IdempotencyRepository {
-  private map = new Map<string, IdempotencyRecord>();
-  async find(key: string) {
-    return this.map.get(key) ?? null;
-  }
-  async store(key: string, orderId: string, response: unknown) {
-    this.map.set(key, { key, orderId, response });
-  }
-}
-
-class InMemoryWebhookEventRepository implements WebhookEventRepository {
-  private processed = new Set<string>();
-  async wasProcessed(id: string) {
-    return this.processed.has(id);
-  }
-  async markProcessed(id: string) {
-    this.processed.add(id);
-  }
-}
-
-describe('Payments (e2e)', () => {
+describe('Orders (e2e)', () => {
   let app: INestApplication;
   let jwtService: JwtService;
+  let orderRepository: InMemoryOrderRepository;
 
   beforeAll(async () => {
+    orderRepository = new InMemoryOrderRepository();
+
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     })
@@ -325,18 +262,10 @@ describe('Payments (e2e)', () => {
       .overrideProvider(RESERVATION_REPOSITORY)
       .useClass(InMemoryReservationRepository)
       .overrideProvider(ORDER_REPOSITORY)
-      .useClass(InMemoryOrderRepository)
-      .overrideProvider(PAYMENT_REPOSITORY)
-      .useClass(InMemoryPaymentRepository)
-      .overrideProvider(SPLIT_TRANSACTION_REPOSITORY)
-      .useClass(InMemorySplitTransactionRepository)
-      .overrideProvider(IDEMPOTENCY_REPOSITORY)
-      .useClass(InMemoryIdempotencyRepository)
-      .overrideProvider(WEBHOOK_EVENT_REPOSITORY)
-      .useClass(InMemoryWebhookEventRepository)
+      .useValue(orderRepository)
       .compile();
 
-    app = moduleFixture.createNestApplication({ rawBody: true });
+    app = moduleFixture.createNestApplication();
     await app.init();
     jwtService = app.get(JwtService);
   });
@@ -370,86 +299,115 @@ describe('Payments (e2e)', () => {
     const offerRes = await request(app.getHttpServer())
       .post(`/products/${productRes.body.id}/offers`)
       .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ priceCents: 1500, stock: 10, condition: 'new', slaDays: 3 })
+      .send({ priceCents: 3000, stock: 10, condition: 'new', slaDays: 3 })
       .expect(201);
 
     const buyerToken = token('buyer', `${sub}-buyer`);
     await request(app.getHttpServer())
       .post('/cart/items')
       .set('Authorization', `Bearer ${buyerToken}`)
-      .send({ offerId: offerRes.body.id, quantity: 2 })
+      .send({ offerId: offerRes.body.id, quantity: 1 })
       .expect(201);
-
     const checkoutRes = await request(app.getHttpServer())
       .post('/checkout')
       .set('Authorization', `Bearer ${buyerToken}`)
       .expect(201);
 
-    return { buyerToken, orderId: checkoutRes.body.id as string };
+    return {
+      sellerToken,
+      buyerToken,
+      sellerId: onboardRes.body.id as string,
+      orderId: checkoutRes.body.id as string,
+      subOrderId: checkoutRes.body.subOrders[0].id as string,
+    };
   }
 
-  it('charges an order (no-op, gateway unconfigured) on the happy path', async () => {
-    const { buyerToken, orderId } = await checkedOutOrder('pay-1');
+  it('lets the buyer view their consolidated order on the happy path', async () => {
+    const { buyerToken, orderId } = await checkedOutOrder('ord-1');
 
     const res = await request(app.getHttpServer())
-      .post('/payments/charge')
+      .get(`/orders/${orderId}`)
       .set('Authorization', `Bearer ${buyerToken}`)
-      .set('Idempotency-Key', randomUUID())
-      .send({ orderId, method: 'pix' })
-      .expect(201);
+      .expect(200);
 
-    expect(res.body.payment.status).toBe('pending');
-    expect(res.body.splits).toHaveLength(1);
+    expect(res.body.id).toBe(orderId);
   });
 
-  it('returns the same response for a repeated Idempotency-Key', async () => {
-    const { buyerToken, orderId } = await checkedOutOrder('pay-2');
-    const key = randomUUID();
-
-    const first = await request(app.getHttpServer())
-      .post('/payments/charge')
-      .set('Authorization', `Bearer ${buyerToken}`)
-      .set('Idempotency-Key', key)
-      .send({ orderId, method: 'pix' })
-      .expect(201);
-    const second = await request(app.getHttpServer())
-      .post('/payments/charge')
-      .set('Authorization', `Bearer ${buyerToken}`)
-      .set('Idempotency-Key', key)
-      .send({ orderId, method: 'pix' })
-      .expect(201);
-
-    expect(second.body.payment.id).toBe(first.body.payment.id);
-  });
-
-  it('rejects charging without an Idempotency-Key header', async () => {
-    const { buyerToken, orderId } = await checkedOutOrder('pay-3');
+  it("rejects a different buyer viewing someone else's order", async () => {
+    const { orderId } = await checkedOutOrder('ord-2');
 
     return request(app.getHttpServer())
-      .post('/payments/charge')
-      .set('Authorization', `Bearer ${buyerToken}`)
-      .send({ orderId, method: 'pix' })
-      .expect(400);
-  });
-
-  it("rejects charging another buyer's order", async () => {
-    const { orderId } = await checkedOutOrder('pay-4');
-
-    return request(app.getHttpServer())
-      .post('/payments/charge')
+      .get(`/orders/${orderId}`)
       .set('Authorization', `Bearer ${token('buyer', 'someone-else')}`)
-      .set('Idempotency-Key', randomUUID())
-      .send({ orderId, method: 'pix' })
       .expect(403);
   });
 
-  it('accepts a webhook and reports it received', () => {
+  it("lets the owning seller list their own sub-orders", async () => {
+    const { sellerToken, sellerId, subOrderId } = await checkedOutOrder('ord-3');
+
+    const res = await request(app.getHttpServer())
+      .get(`/sellers/${sellerId}/orders`)
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .expect(200);
+
+    expect(res.body.some((so: { id: string }) => so.id === subOrderId)).toBe(true);
+  });
+
+  it("rejects a different seller listing another seller's orders", async () => {
+    const { sellerId } = await checkedOutOrder('ord-4');
+
     return request(app.getHttpServer())
-      .post('/payments/webhook')
-      .send({ id: randomUUID(), type: 'order.paid', data: { id: 'gw_unknown', status: 'paid' } })
-      .expect(200)
-      .expect((res) => {
-        if (res.body.received !== true) throw new Error('expected received: true');
-      });
+      .get(`/sellers/${sellerId}/orders`)
+      .set('Authorization', `Bearer ${token('seller', 'someone-else')}`)
+      .expect(403);
+  });
+
+  it('drives a sub-order through paid -> shipped -> delivered, on the happy path', async () => {
+    const { sellerToken, subOrderId } = await checkedOutOrder('ord-5');
+    const subOrder = orderRepository.orders
+      .flatMap((o) => o.subOrders)
+      .find((so) => so.id === subOrderId)!;
+    subOrder.status = 'paid';
+
+    const shipped = await request(app.getHttpServer())
+      .patch(`/suborders/${subOrderId}/status`)
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ status: 'shipped' })
+      .expect(200);
+    expect(shipped.body.status).toBe('shipped');
+
+    const delivered = await request(app.getHttpServer())
+      .patch(`/suborders/${subOrderId}/status`)
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ status: 'delivered' })
+      .expect(200);
+    expect(delivered.body.status).toBe('delivered');
+  });
+
+  it('rejects shipping a sub-order that is not paid yet', async () => {
+    const { sellerToken, subOrderId } = await checkedOutOrder('ord-6');
+
+    return request(app.getHttpServer())
+      .patch(`/suborders/${subOrderId}/status`)
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ status: 'shipped' })
+      .expect(409);
+  });
+
+  it("rejects a different seller updating another seller's sub-order", async () => {
+    const { subOrderId } = await checkedOutOrder('ord-7');
+
+    return request(app.getHttpServer())
+      .patch(`/suborders/${subOrderId}/status`)
+      .set('Authorization', `Bearer ${token('seller', 'someone-else')}`)
+      .send({ status: 'shipped' })
+      .expect(403);
+  });
+
+  it('returns 400 for a malformed order id', () => {
+    return request(app.getHttpServer())
+      .get('/orders/not-a-uuid')
+      .set('Authorization', `Bearer ${token('buyer', 'ord-8-buyer')}`)
+      .expect(400);
   });
 });

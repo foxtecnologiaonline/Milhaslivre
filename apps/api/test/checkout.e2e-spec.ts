@@ -229,11 +229,19 @@ class InMemoryOrderRepository implements OrderRepository {
     if (order) order.status = 'confirmed';
   }
 
-  async markSubOrderPaid(id: string) {
+  async updateSubOrderStatus(id: string, status: string) {
     for (const order of this.orders) {
       const subOrder = order.subOrders.find((so) => so.id === id);
-      if (subOrder) subOrder.status = 'paid';
+      if (subOrder) {
+        subOrder.status = status;
+        return subOrder;
+      }
     }
+    throw new Error('sub-order not found');
+  }
+
+  async findSubOrdersBySellerId(sellerId: string) {
+    return this.orders.flatMap((order) => order.subOrders.filter((so) => so.sellerId === sellerId));
   }
 }
 

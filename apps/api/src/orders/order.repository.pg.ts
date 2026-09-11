@@ -221,11 +221,67 @@ export class PgOrderRepository implements OrderRepository {
     };
   }
 
+  async findSubOrdersBySellerId(sellerId: string): Promise<SubOrderRecord[]> {
+    const rows = await this.pool.query<{
+      sub_order_id: string;
+      order_id: string;
+      subtotal_cents: number;
+      shipping_cents: number;
+      sub_order_status: string;
+      item_id: string | null;
+      offer_id: string | null;
+      qty: number | null;
+      unit_price_cents: number | null;
+    }>(
+      `SELECT
+         so.id AS sub_order_id, so.order_id, so.subtotal_cents, so.shipping_cents, so.status AS sub_order_status,
+         oi.id AS item_id, oi.offer_id, oi.qty, oi.unit_price_cents
+       FROM orders.sub_orders so
+       LEFT JOIN orders.order_items oi ON oi.sub_order_id = so.id
+       WHERE so.seller_id = $1
+       ORDER BY so.created_at DESC, oi.id ASC`,
+      [sellerId],
+    );
+
+    const subOrdersById = new Map<string, SubOrderRecord>();
+    for (const row of rows.rows) {
+      let subOrder = subOrdersById.get(row.sub_order_id);
+      if (!subOrder) {
+        subOrder = {
+          id: row.sub_order_id,
+          orderId: row.order_id,
+          sellerId,
+          subtotalCents: row.subtotal_cents,
+          shippingCents: row.shipping_cents,
+          status: row.sub_order_status,
+          items: [],
+        };
+        subOrdersById.set(row.sub_order_id, subOrder);
+      }
+      if (row.item_id) {
+        subOrder.items.push({
+          id: row.item_id,
+          subOrderId: row.sub_order_id,
+          offerId: row.offer_id as string,
+          qty: row.qty as number,
+          unitPriceCents: row.unit_price_cents as number,
+        });
+      }
+    }
+
+    return Array.from(subOrdersById.values());
+  }
+
   async markOrderConfirmed(id: string): Promise<void> {
     await this.pool.query(`UPDATE orders.orders SET status = 'confirmed' WHERE id = $1`, [id]);
   }
 
-  async markSubOrderPaid(id: string): Promise<void> {
-    await this.pool.query(`UPDATE orders.sub_orders SET status = 'paid' WHERE id = $1`, [id]);
+  async updateSubOrderStatus(id: string, status: string): Promise<SubOrderRecord> {
+    await this.pool.query(`UPDATE orders.sub_orders SET status = $2 WHERE id = $1`, [id, status]);
+    const subOrder = await this.findSubOrderById(id);
+    if (!subOrder) {
+      throw new Error(`sub-order ${id} disappeared after status update`);
+    }
+    return subOrder;
   }
 }

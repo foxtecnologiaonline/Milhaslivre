@@ -1,12 +1,14 @@
 import { Module } from '@nestjs/common';
+import { IdentityModule } from '../identity/identity.module';
+import { SellerModule } from '../seller/seller.module';
 import { ORDER_REPOSITORY } from './order.repository';
 import { PgOrderRepository } from './order.repository.pg';
+import { OrdersController } from './orders.controller';
 import { OrdersService } from './orders.service';
 
-// No controller yet — GET /orders/:id, GET /sellers/:id/orders and
-// PATCH /suborders/:id/status land here in backlog item 10. For now this
-// module only owns the orders.* schema and exposes creation for checkout.
 @Module({
+  imports: [IdentityModule, SellerModule],
+  controllers: [OrdersController],
   providers: [OrdersService, { provide: ORDER_REPOSITORY, useClass: PgOrderRepository }],
   exports: [OrdersService],
 })
