@@ -9,6 +9,7 @@ import { PagarmeService } from '../pagarme/pagarme.service';
 import type { CreateSellerDto } from './dto/create-seller.schema';
 import type { UpdateSellerStatusDto } from './dto/update-seller-status.schema';
 import { SELLER_REPOSITORY, SellerRecord, SellerRepository } from './seller.repository';
+import type { SellerStatus } from './types';
 
 @Injectable()
 export class SellerService {
@@ -46,6 +47,11 @@ export class SellerService {
       throw new NotFoundException('no seller profile for this user yet');
     }
     return seller;
+  }
+
+  // For the admin panel: browse sellers by status (e.g. the pending approval queue).
+  async list(status?: SellerStatus): Promise<SellerRecord[]> {
+    return this.repository.list(status);
   }
 
   async updateStatus(id: string, dto: UpdateSellerStatusDto): Promise<SellerRecord> {

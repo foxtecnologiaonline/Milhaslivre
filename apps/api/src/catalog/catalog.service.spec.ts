@@ -12,6 +12,7 @@ import type {
   CreateProductInput,
   ProductRecord,
   ProductRepository,
+  SearchOptions,
 } from './product.repository';
 
 class InMemoryProductRepository implements ProductRepository {
@@ -23,19 +24,27 @@ class InMemoryProductRepository implements ProductRepository {
     return this.products.find((p) => p.id === id) ?? null;
   }
 
-  async search(query: string | undefined) {
-    if (!query) return this.products;
-    return this.products.filter((p) => p.title.toLowerCase().includes(query.toLowerCase()));
+  async search(query: string | undefined, options?: SearchOptions) {
+    const visible = options?.includeBlocked ? this.products : this.products.filter((p) => !p.isBlocked);
+    if (!query) return visible;
+    return visible.filter((p) => p.title.toLowerCase().includes(query.toLowerCase()));
   }
 
   async create(input: CreateProductInput) {
-    const product: ProductRecord = { id: `product-${++this.counter}`, createdAt: new Date(), ...input };
+    const product: ProductRecord = { id: `product-${++this.counter}`, createdAt: new Date(), isBlocked: false, ...input };
     this.products.push(product);
     return product;
   }
 
   async findCategoryById(id: string) {
     return this.categories.find((c) => c.id === id) ?? null;
+  }
+
+  async setBlocked(id: string, isBlocked: boolean) {
+    const product = this.products.find((p) => p.id === id);
+    if (!product) return null;
+    product.isBlocked = isBlocked;
+    return product;
   }
 }
 
@@ -148,6 +157,27 @@ describe('CatalogService', () => {
       const { service } = buildService();
 
       await expect(service.findProductById('missing')).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('setProductBlocked', () => {
+    it('blocks a product and hides it from search, but not from admin listing', async () => {
+      const { service } = buildService();
+      const product = await service.createProduct(baseProductDto);
+
+      const blocked = await service.setProductBlocked(product.id, true);
+
+      expect(blocked.isBlocked).toBe(true);
+      expect(await service.searchProducts(undefined)).toHaveLength(0);
+      expect(await service.listAllProductsForAdmin()).toHaveLength(1);
+    });
+
+    it('throws when the product does not exist', async () => {
+      const { service } = buildService();
+
+      await expect(service.setProductBlocked('missing', true)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
     });
   });
 

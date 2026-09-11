@@ -53,6 +53,20 @@ export class CatalogService {
     return this.products.search(query);
   }
 
+  // Admin catalog moderation: the storefront listing above always hides
+  // blocked products, this one is for the admin panel to see everything.
+  async listAllProductsForAdmin(): Promise<ProductRecord[]> {
+    return this.products.search(undefined, { includeBlocked: true });
+  }
+
+  async setProductBlocked(id: string, isBlocked: boolean): Promise<ProductRecord> {
+    const updated = await this.products.setBlocked(id, isBlocked);
+    if (!updated) {
+      throw new NotFoundException('product not found');
+    }
+    return updated;
+  }
+
   async createOffer(userId: string, productId: string, dto: CreateOfferDto): Promise<OfferRecord> {
     const product = await this.products.findById(productId);
     if (!product) {

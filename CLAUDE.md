@@ -52,7 +52,7 @@ precisa migrar antes).
 11. [x] Módulo `reviews`: liberado só após `delivered`
 12. [x] Storefront Next.js: home, busca, página de produto, carrinho, checkout
 13. [x] Painel seller: cadastro de produto, listagem de pedidos
-14. [ ] Painel admin: aprovação de seller, moderação de catálogo
+14. [x] Painel admin: aprovação de seller, moderação de catálogo
 
 Nada da Fase 4/5 (cupom, chat, recomendação, disputa, fulfillment) entra antes do
 item 14 estar em produção. Uma tarefa do backlog = um PR.
@@ -412,7 +412,57 @@ npm run build                # build de produção em api e web
       "Enviado" → "Marcar como entregue" muda para "Entregue" e o botão some
       (estado terminal), confirmando que a máquina de estados do backend e o
       controle condicional do botão no front estão de acordo.
-- [ ] Item 14: pendente (painel admin).
+- [x] Item 14 do backlog: painel admin (`/admin`, Next.js) — último item do
+      backlog original; a partir daqui o projeto entra em produção e o
+      próprio CLAUDE.md libera a Fase 4/5 (cupom, chat, recomendação,
+      disputa, fulfillment), hoje fora de escopo. Duas seções: "Aprovação de
+      vendedores" e "Moderação de catálogo", cada uma expondo um endpoint que
+      não existia — nenhum dos dois módulos precisava, até agora, que alguém
+      *listasse* várias entidades de uma vez (o resto da API sempre resolve
+      uma entidade já conhecida a partir de um `:id`).
+      `GET /sellers` (role admin, `?status=pending|approved|rejected`
+      opcional, 400 se o valor não bater com o enum) — `SellerRepository`
+      ganhou `list(status?)`, implementado tanto no Postgres quanto (script
+      em Python via Bash, mesmo mecanismo usado no item 8/9/10 para cascatas
+      de fake — 11 arquivos de teste implementam a interface) em todo fake
+      `InMemorySellerRepository` espalhado pelos specs/e2e de `seller`,
+      `shipping`, `payments`, `reviews`, `catalog`, `orders`, `checkout`,
+      `inventory`. Moderação de catálogo precisou de coluna nova,
+      `catalog.products.is_blocked` (`migrations/03-catalog/002_add_product_
+      moderation.sql`, default `false`) — decisão de design: bloquear
+      **esconde da busca/listagem** (`GET /products?query=`), mas **não**
+      derruba o acesso direto por `GET /products/:id` (um link direto
+      continua abrindo o produto bloqueado; a moderação aqui é "tirar de
+      circulação", não um takedown completo) — simplificação documentada
+      aqui, não um requisito não descoberto. Dois endpoints novos em
+      `catalog`: `GET /products/admin/all` (role admin, lista tudo incluindo
+      bloqueados — sem ele o painel não teria como achar algo pra
+      desbloquear) e `PATCH /products/:id/moderation` (role admin,
+      `{ isBlocked: boolean }`). `ProductRepository.search` ganhou um
+      segundo parâmetro opcional `{ includeBlocked }`; como é opcional, os
+      13 fakes que implementam `ProductRepository` só precisaram de duas
+      mudanças mecânicas (não da assinatura de `search`): o campo novo
+      `isBlocked: false` no objeto retornado por `create()` e um método novo
+      `setBlocked()` — outra rodada do mesmo script Python, dessa vez em dois
+      padrões de fake distintos (`NullProductRepository` nos specs que nem
+      usam catálogo de verdade, e `InMemoryProductRepository` nos que usam).
+      Painel: "Aprovação de vendedores" lista pendentes com Aprovar/Rejeitar
+      (rejeitar exige motivo, mesma regra do backend — o botão de confirmar
+      fica desabilitado até haver texto, refletindo o
+      `.refine()` do Zod no `UpdateSellerStatusDto`); "Moderação de
+      catálogo" lista todo produto com um botão Bloquear/Desbloquear por
+      linha. Testes: unitários novos (`SellerService.list`,
+      `CatalogService.setProductBlocked`/`listAllProductsForAdmin`) + e2e
+      novos em `seller.e2e-spec.ts` (listar, filtrar por status, rejeitar
+      não-admin, status inválido) e `catalog.e2e-spec.ts` (bloquear some da
+      busca mas não da listagem admin, rejeitar não-admin). Validado
+      manualmente ponta a ponta num browser real (Playwright): login como
+      admin → vendedor pendente (criado via API) aparece na fila → Aprovar →
+      some da fila → tabela de moderação lista os 3 produtos existentes →
+      bloquear um → badge vira "Bloqueado" e ele desaparece da busca da home
+      → desbloquear → badge volta a "Visível".
+
+Com o item 14 em produção, o backlog original (seção 3) está completo.
 
 Infra compartilhada criada junto do item 2 (reaproveitável pelos próximos
 módulos): `ConfigModule` com validação Zod de env vars (`src/config/env.schema.ts`),
@@ -422,4 +472,4 @@ token `PG_POOL`), e um runner de migração idempotente
 `migrations/<módulo>/*.sql`, tracked via `public.schema_migrations`). CI roda as
 migrations contra um serviço Postgres antes dos testes.
 
-**Última atualização**: 2026-09-11
+**Última atualização**: 2026-09-11 (item 14 — backlog original completo)

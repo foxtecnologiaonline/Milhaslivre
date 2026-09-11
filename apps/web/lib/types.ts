@@ -39,6 +39,10 @@ export interface ProductWithOffers extends Product {
   offers: Offer[];
 }
 
+export interface AdminProduct extends Product {
+  isBlocked: boolean;
+}
+
 export interface CartItem {
   id: string;
   buyerId: string;

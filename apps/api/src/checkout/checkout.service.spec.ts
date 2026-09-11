@@ -34,6 +34,9 @@ class NullProductRepository implements ProductRepository {
   async findCategoryById(): Promise<CategoryRecord | null> {
     return null;
   }
+  async setBlocked(): Promise<ProductRecord | null> {
+    return null;
+  }
 }
 
 class InMemoryOfferRepository implements OfferRepository {

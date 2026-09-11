@@ -117,6 +117,10 @@ class InMemorySellerRepository implements SellerRepository {
   async findByUserId(userId: string) {
     return this.sellers.find((s) => s.userId === userId) ?? null;
   }
+
+  async list(status?: string) {
+    return status ? this.sellers.filter((s) => s.status === status) : [...this.sellers];
+  }
   async create(input: CreateSellerInput) {
     return this.seed(input);
   }

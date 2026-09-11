@@ -43,6 +43,10 @@ class InMemorySellerRepository implements SellerRepository {
   async findByUserId(userId: string) {
     return this.sellers.find((s) => s.userId === userId) ?? null;
   }
+
+  async list(status?: string) {
+    return status ? this.sellers.filter((s) => s.status === status) : [...this.sellers];
+  }
   async create(input: CreateSellerInput) {
     const seller: SellerRecord = {
       id: randomUUID(),
@@ -85,12 +89,19 @@ class InMemoryProductRepository implements ProductRepository {
     return this.products.filter((p) => p.title.toLowerCase().includes(query.toLowerCase()));
   }
   async create(input: CreateProductInput) {
-    const product: ProductRecord = { id: randomUUID(), createdAt: new Date(), ...input };
+    const product: ProductRecord = { id: randomUUID(), createdAt: new Date(), isBlocked: false, ...input };
     this.products.push(product);
     return product;
   }
   async findCategoryById(id: string) {
     return this.categories.find((c) => c.id === id) ?? null;
+  }
+
+  async setBlocked(id: string, isBlocked: boolean) {
+    const product = this.products.find((p) => p.id === id);
+    if (!product) return null;
+    product.isBlocked = isBlocked;
+    return product;
   }
 }
 

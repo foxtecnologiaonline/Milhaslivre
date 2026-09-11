@@ -16,6 +16,10 @@ class InMemorySellerRepository implements SellerRepository {
     return this.sellers.find((s) => s.userId === userId) ?? null;
   }
 
+  async list(status?: string) {
+    return status ? this.sellers.filter((s) => s.status === status) : [...this.sellers];
+  }
+
   async create(input: CreateSellerInput) {
     const seller: SellerRecord = {
       id: `seller-${++this.counter}`,
@@ -109,6 +113,30 @@ describe('SellerService', () => {
       const service = buildService();
 
       await expect(service.findMine('user-1')).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('list', () => {
+    it('returns all sellers when no status filter is given', async () => {
+      const service = buildService();
+      await service.onboard('user-1', baseDto);
+      await service.onboard('user-2', { companyName: 'Loja B', document: '98765432100' });
+
+      const all = await service.list();
+
+      expect(all).toHaveLength(2);
+    });
+
+    it('filters sellers by status', async () => {
+      const service = buildService();
+      const created = await service.onboard('user-1', baseDto);
+      await service.onboard('user-2', { companyName: 'Loja B', document: '98765432100' });
+      await service.updateStatus(created.id, { status: 'approved' });
+
+      const pending = await service.list('pending');
+
+      expect(pending).toHaveLength(1);
+      expect(pending[0].userId).toBe('user-2');
     });
   });
 

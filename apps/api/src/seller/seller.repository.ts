@@ -23,6 +23,7 @@ export const SELLER_REPOSITORY = Symbol('SELLER_REPOSITORY');
 export interface SellerRepository {
   findById(id: string): Promise<SellerRecord | null>;
   findByUserId(userId: string): Promise<SellerRecord | null>;
+  list(status?: SellerStatus): Promise<SellerRecord[]>;
   create(input: CreateSellerInput): Promise<SellerRecord>;
   updateStatus(
     id: string,

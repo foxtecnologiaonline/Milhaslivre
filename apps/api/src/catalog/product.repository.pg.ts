@@ -6,7 +6,11 @@ import type {
   CreateProductInput,
   ProductRecord,
   ProductRepository,
+  SearchOptions,
 } from './product.repository';
+
+const SELECT_COLUMNS =
+  'id, title, description, category_id, brand, attributes, is_blocked, created_at';
 
 interface ProductRow {
   id: string;
@@ -15,6 +19,7 @@ interface ProductRow {
   category_id: string | null;
   brand: string | null;
   attributes: Record<string, unknown>;
+  is_blocked: boolean;
   created_at: Date;
 }
 
@@ -26,6 +31,7 @@ function mapRow(row: ProductRow): ProductRecord {
     categoryId: row.category_id,
     brand: row.brand,
     attributes: row.attributes,
+    isBlocked: row.is_blocked,
     createdAt: row.created_at,
   };
 }
@@ -36,25 +42,26 @@ export class PgProductRepository implements ProductRepository {
 
   async findById(id: string): Promise<ProductRecord | null> {
     const { rows } = await this.pool.query<ProductRow>(
-      `SELECT id, title, description, category_id, brand, attributes, created_at
-       FROM catalog.products WHERE id = $1`,
+      `SELECT ${SELECT_COLUMNS} FROM catalog.products WHERE id = $1`,
       [id],
     );
     return rows[0] ? mapRow(rows[0]) : null;
   }
 
-  async search(query: string | undefined): Promise<ProductRecord[]> {
+  async search(query: string | undefined, options?: SearchOptions): Promise<ProductRecord[]> {
+    const blockedClause = options?.includeBlocked ? '' : 'is_blocked = false AND ';
+
     if (!query) {
       const { rows } = await this.pool.query<ProductRow>(
-        `SELECT id, title, description, category_id, brand, attributes, created_at
-         FROM catalog.products ORDER BY created_at DESC LIMIT 50`,
+        `SELECT ${SELECT_COLUMNS} FROM catalog.products
+         WHERE ${blockedClause}true ORDER BY created_at DESC LIMIT 50`,
       );
       return rows.map(mapRow);
     }
 
     const { rows } = await this.pool.query<ProductRow>(
-      `SELECT id, title, description, category_id, brand, attributes, created_at
-       FROM catalog.products WHERE title ILIKE $1 ORDER BY created_at DESC LIMIT 50`,
+      `SELECT ${SELECT_COLUMNS} FROM catalog.products
+       WHERE ${blockedClause}title ILIKE $1 ORDER BY created_at DESC LIMIT 50`,
       [`%${query}%`],
     );
     return rows.map(mapRow);
@@ -64,7 +71,7 @@ export class PgProductRepository implements ProductRepository {
     const { rows } = await this.pool.query<ProductRow>(
       `INSERT INTO catalog.products (title, description, category_id, brand, attributes)
        VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, title, description, category_id, brand, attributes, created_at`,
+       RETURNING ${SELECT_COLUMNS}`,
       [input.title, input.description, input.categoryId, input.brand, input.attributes],
     );
     return mapRow(rows[0]);
@@ -76,5 +83,13 @@ export class PgProductRepository implements ProductRepository {
       [id],
     );
     return rows[0] ?? null;
+  }
+
+  async setBlocked(id: string, isBlocked: boolean): Promise<ProductRecord | null> {
+    const { rows } = await this.pool.query<ProductRow>(
+      `UPDATE catalog.products SET is_blocked = $2 WHERE id = $1 RETURNING ${SELECT_COLUMNS}`,
+      [id, isBlocked],
+    );
+    return rows[0] ? mapRow(rows[0]) : null;
   }
 }

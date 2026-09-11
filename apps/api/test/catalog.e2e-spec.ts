@@ -16,6 +16,7 @@ import {
   PRODUCT_REPOSITORY,
   ProductRecord,
   ProductRepository,
+  SearchOptions,
 } from '../src/catalog/product.repository';
 import {
   CreateSellerInput,
@@ -34,6 +35,10 @@ class InMemorySellerRepository implements SellerRepository {
 
   async findByUserId(userId: string) {
     return this.sellers.find((s) => s.userId === userId) ?? null;
+  }
+
+  async list(status?: string) {
+    return status ? this.sellers.filter((s) => s.status === status) : [...this.sellers];
   }
 
   async create(input: CreateSellerInput) {
@@ -77,19 +82,27 @@ class InMemoryProductRepository implements ProductRepository {
     return this.products.find((p) => p.id === id) ?? null;
   }
 
-  async search(query: string | undefined) {
-    if (!query) return this.products;
-    return this.products.filter((p) => p.title.toLowerCase().includes(query.toLowerCase()));
+  async search(query: string | undefined, options?: SearchOptions) {
+    const visible = options?.includeBlocked ? this.products : this.products.filter((p) => !p.isBlocked);
+    if (!query) return visible;
+    return visible.filter((p) => p.title.toLowerCase().includes(query.toLowerCase()));
   }
 
   async create(input: CreateProductInput) {
-    const product: ProductRecord = { id: randomUUID(), createdAt: new Date(), ...input };
+    const product: ProductRecord = { id: randomUUID(), createdAt: new Date(), isBlocked: false, ...input };
     this.products.push(product);
     return product;
   }
 
   async findCategoryById(id: string) {
     return this.categories.find((c) => c.id === id) ?? null;
+  }
+
+  async setBlocked(id: string, isBlocked: boolean) {
+    const product = this.products.find((p) => p.id === id);
+    if (!product) return null;
+    product.isBlocked = isBlocked;
+    return product;
   }
 }
 
@@ -229,6 +242,48 @@ describe('Catalog (e2e)', () => {
       .post(`/products/${productRes.body.id}/offers`)
       .set('Authorization', `Bearer ${sellerToken}`)
       .send({ priceCents: 5000, stock: 1, condition: 'new', slaDays: 2 })
+      .expect(403);
+  });
+
+  it('lets an admin block a product, hiding it from search but not from the admin listing', async () => {
+    const sellerToken = await approvedSellerToken('seller-catalog-3');
+    const productRes = await request(app.getHttpServer())
+      .post('/products')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Produto Banido', description: 'x' })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .patch(`/products/${productRes.body.id}/moderation`)
+      .set('Authorization', `Bearer ${token('admin', 'admin-2')}`)
+      .send({ isBlocked: true })
+      .expect(200);
+
+    const searchRes = await request(app.getHttpServer())
+      .get('/products')
+      .query({ query: 'Banido' })
+      .expect(200);
+    expect(searchRes.body.some((p: { id: string }) => p.id === productRes.body.id)).toBe(false);
+
+    const adminListRes = await request(app.getHttpServer())
+      .get('/products/admin/all')
+      .set('Authorization', `Bearer ${token('admin', 'admin-2')}`)
+      .expect(200);
+    expect(adminListRes.body.some((p: { id: string }) => p.id === productRes.body.id)).toBe(true);
+  });
+
+  it('rejects moderation from a non-admin', async () => {
+    const sellerToken = await approvedSellerToken('seller-catalog-4');
+    const productRes = await request(app.getHttpServer())
+      .post('/products')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Outro produto', description: 'x' })
+      .expect(201);
+
+    return request(app.getHttpServer())
+      .patch(`/products/${productRes.body.id}/moderation`)
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ isBlocked: true })
       .expect(403);
   });
 

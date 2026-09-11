@@ -23,6 +23,10 @@ class InMemorySellerRepository implements SellerRepository {
     return this.sellers.find((s) => s.userId === userId) ?? null;
   }
 
+  async list(status?: string) {
+    return status ? this.sellers.filter((s) => s.status === status) : [...this.sellers];
+  }
+
   async create(input: CreateSellerInput) {
     const seller: SellerRecord = {
       id: randomUUID(),
@@ -146,6 +150,35 @@ describe('Seller (e2e)', () => {
       .get('/sellers/me')
       .set('Authorization', `Bearer ${token('seller', 'seller-user-4')}`)
       .expect(404);
+  });
+
+  it('lists pending sellers for an admin', async () => {
+    await request(app.getHttpServer())
+      .post('/sellers')
+      .set('Authorization', `Bearer ${token('seller', 'seller-user-5')}`)
+      .send({ companyName: 'Loja D', document: '55566677700' })
+      .expect(201);
+
+    const listRes = await request(app.getHttpServer())
+      .get('/sellers?status=pending')
+      .set('Authorization', `Bearer ${token('admin', 'admin-2')}`)
+      .expect(200);
+
+    expect(listRes.body.some((s: { userId: string }) => s.userId === 'seller-user-5')).toBe(true);
+  });
+
+  it('rejects listing sellers from a non-admin', () => {
+    return request(app.getHttpServer())
+      .get('/sellers')
+      .set('Authorization', `Bearer ${token('seller', 'seller-user-6')}`)
+      .expect(403);
+  });
+
+  it('rejects an invalid status filter', () => {
+    return request(app.getHttpServer())
+      .get('/sellers?status=bogus')
+      .set('Authorization', `Bearer ${token('admin', 'admin-3')}`)
+      .expect(400);
   });
 
   it('returns 404 for a well-formed id that does not exist', () => {

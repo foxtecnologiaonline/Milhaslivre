@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -6,6 +7,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { CurrentUser } from '../identity/decorators/current-user.decorator';
@@ -20,6 +22,9 @@ import {
   UpdateSellerStatusDto,
 } from './dto/update-seller-status.schema';
 import { SellerService } from './seller.service';
+import type { SellerStatus } from './types';
+
+const VALID_STATUSES: SellerStatus[] = ['pending', 'approved', 'rejected'];
 
 @Controller('sellers')
 export class SellerController {
@@ -33,6 +38,18 @@ export class SellerController {
     @Body(new ZodValidationPipe(createSellerSchema)) dto: CreateSellerDto,
   ) {
     return this.sellerService.onboard(user.sub, dto);
+  }
+
+  // Admin-only browse (e.g. the pending-approval queue) — the buyer-facing
+  // GET /sellers/:id below only ever exposes a single already-known seller.
+  @Get()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  list(@Query('status') status?: string) {
+    if (status !== undefined && !VALID_STATUSES.includes(status as SellerStatus)) {
+      throw new BadRequestException(`invalid status: ${status}`);
+    }
+    return this.sellerService.list(status as SellerStatus | undefined);
   }
 
   @Get('me')

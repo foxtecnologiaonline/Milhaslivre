@@ -57,6 +57,16 @@ export class PgSellerRepository implements SellerRepository {
     return rows[0] ? mapRow(rows[0]) : null;
   }
 
+  async list(status?: SellerStatus): Promise<SellerRecord[]> {
+    const { rows } = await this.pool.query<SellerRow>(
+      status
+        ? `SELECT ${SELECT_COLUMNS} FROM seller.sellers WHERE status = $1 ORDER BY created_at DESC`
+        : `SELECT ${SELECT_COLUMNS} FROM seller.sellers ORDER BY created_at DESC`,
+      status ? [status] : [],
+    );
+    return rows.map(mapRow);
+  }
+
   async create(input: CreateSellerInput): Promise<SellerRecord> {
     const { rows } = await this.pool.query<SellerRow>(
       `INSERT INTO seller.sellers (user_id, company_name, document)
