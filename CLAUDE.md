@@ -1,380 +1,504 @@
-# Milhas Livre - Project Context
+# Projeto: Marketplace Multi-Vendedor
 
-## 🎯 Project Overview
+> Nome ainda não decidido entre **Milhas-Livre** e **Mart-Milhas**. Este repositório
+> substitui o MVP anterior de corretor de milhas P2P (Hono.js + SvelteKit) — aquele
+> projeto foi descontinuado em favor deste escopo.
 
-**Milhas Livre** is a points/miles broker MVP. The business model is to act as a middleman between sellers and buyers of airline points/miles, taking a 3-10% commission per transaction.
+Stack fixa: NestJS + PostgreSQL + Redis/BullMQ + Meilisearch + Next.js + Pagar.me
+(split via `recipient_id`) + Melhor Envio (frete).
 
-### Business Flow
-1. Seller enters (WhatsApp/Web)
-2. Inform: program, quantity, desired price
-3. System generates quotation (15-min cache)
-4. Find buyer (manual/list)
-5. Confirm operation (atomic transaction)
-6. Seller transfers points
-7. Buyer pays
-8. Broker receives commission (audit trail logged)
+Arquitetura: Modular Monolith, 1 schema por módulo, comunicação entre módulos SEMPRE
+via interface de serviço + evento de domínio (nunca import direto de repositório de
+outro módulo). Boundary de módulo = boundary de futuro microserviço.
 
-## 🏗️ Current Architecture (Optimized & Production-Ready)
+Regra de negócio central: **1 `Order` comprado de N sellers → N `SubOrder`
+independentes**, cada um com pagamento (split), frete e status de ciclo de vida
+próprios. O comprador vê o `Order` consolidado; o seller vê só seu(s) `SubOrder`.
 
-### Tech Stack
-- **Frontend**: SvelteKit + Vite + TypeScript
-- **Backend**: Hono.js (Node.js production, not Workers-specific)
-- **Database**: PostgreSQL (Railway/Render) with migrations
-- **Validation**: Zod (type-safe schema validation)
-- **Security**: PBKDF2 password hashing, JWT auth, rate limiting
-- **Messaging**: Twilio WhatsApp (stubs ready)
-- **PDF**: Contract generation (stubs ready)
-- **Logging**: Structured JSON logging
-- **Deployment**: Vercel (Frontend), Railway (Backend)
+## Estrutura do monorepo
 
-### Project Structure
 ```
-packages/
-├── frontend/
-│   ├── src/
-│   │   ├── pages/          # Page components
-│   │   ├── components/     # Reusable UI
-│   │   ├── stores/         # Svelte stores (auth)
-│   │   └── lib/            # Validators, formatters, masks
-│   ├── vite.config.ts
-│   └── package.json
-└── backend/
-    ├── src/
-    │   ├── routes/         # Auth, quotations, operations
-    │   ├── services/       # Twilio, PDF generation
-    │   ├── middleware/     # Rate limiting
-    │   ├── config.ts       # Env validation
-    │   ├── db.ts          # Pooling + transactions
-    │   ├── auth.ts        # JWT
-    │   ├── crypto.ts      # Password hashing
-    │   ├── error.ts       # Custom errors
-    │   ├── logger.ts      # Structured logging
-    │   ├── validators.ts  # Business logic
-    │   └── index.ts       # Hono app + middleware
-    ├── tests/             # Vitest suite
-    ├── migrations/        # SQL (001_initial, 002_audit_trail)
-    ├── wrangler.toml
-    └── package.json
+apps/
+├── api/    # NestJS — modular monolith (1 módulo por bounded context)
+└── web/    # Next.js — storefront
+docker-compose.yml   # Postgres + Redis (dev local)
 ```
 
-## 📊 Database Schema (Audit-Ready)
+Cada bounded context (`identity`, `seller`, `catalog`, `inventory`, `cart`,
+`checkout`, `payments`, `orders`, `shipping`, `reviews`) vira um módulo Nest sob
+`apps/api/src/<modulo>/`, com schema Postgres próprio (`<modulo>.*`). Nenhum módulo
+lê tabela de outro módulo diretamente — só via serviço exposto (ex.: `catalog`
+resolve o seller aprovado chamando `SellerService.getApprovedSellerForUser`,
+exportado por `SellerModule`, em vez de consultar `seller.sellers`).
 
-### Core Tables
-1. **users** - Authentication & profiles
-   - Fields: id, email, cpf, name, phone, role, password_hash (PBKDF2), verified, verified_at, deleted_at
-   - Soft deletes via `deleted_at` timestamp
+Migrations ficam em `apps/api/migrations/<NN-modulo>/<NNN_descrição>.sql` — o
+prefixo `NN-` no nome do diretório do módulo (`01-identity`, `02-seller`,
+`03-catalog`, ...) mantém a ordem de aplicação alinhada à ordem de dependência do
+backlog (ex.: `catalog.offers` tem FK para `seller.sellers`, então `seller`
+precisa migrar antes).
 
-2. **buyers** - Corporate buyer profiles
-   - Fields: id, user_id, cnpj, company_name, verified, verified_at, verification_documents (JSONB)
+## Backlog ativo (ordem fixa — seguir a seção 3 do escopo de engenharia)
 
-3. **operations** - Main business transactions (with audit trail)
-   - Fields: id, seller_id, buyer_id, program, amount, price_per_thousand, commission_percentage
-   - Computed: total_price, commission_amount
-   - Status: 'pending', 'confirmed', 'completed', 'cancelled'
-   - Audit: metadata (JSONB), deleted_at
+1. [x] Monorepo + Docker Compose (Postgres, Redis) + CI (lint + test) rodando verde
+2. [x] Módulo `identity`: registro/login/JWT + RBAC (`buyer`, `seller`, `admin`)
+3. [x] Módulo `seller`: onboarding + aprovação por admin
+4. [x] Módulo `catalog`: produto + oferta + categoria, com testes de criação/consulta
+5. [x] Módulo `inventory`: reserva/liberação de estoque atômica (lock otimista)
+6. [x] Módulo `cart`: carrinho persistido por buyer, agregando ofertas de múltiplos sellers
+7. [x] Módulo `checkout`: transforma carrinho em `Order` + `SubOrder`s, sem cobrar ainda
+8. [x] Módulo `payments`: gateway (Pagar.me), split por `SubOrder`, webhook idempotente
+9. [x] Módulo `shipping`: cotação de frete por `SubOrder` no checkout + etiqueta pós-pagamento
+10. [x] Módulo `orders`: status por `SubOrder` (pending → paid → shipped → delivered), evento por transição
+11. [x] Módulo `reviews`: liberado só após `delivered`
+12. [x] Storefront Next.js: home, busca, página de produto, carrinho, checkout
+13. [x] Painel seller: cadastro de produto, listagem de pedidos
+14. [x] Painel admin: aprovação de seller, moderação de catálogo
 
-4. **transactions** - Payment records
-   - Fields: id, operation_id, amount, commission_amount, status, payment_method, payment_reference, paid_at, failed_reason
+Nada da Fase 4/5 (cupom, chat, recomendação, disputa, fulfillment) entra antes do
+item 14 estar em produção. Uma tarefa do backlog = um PR.
 
-5. **quotations** - 15-minute cached price quotes
+## Regras de engenharia não-negociáveis
 
-6. **audit_logs** - Comprehensive audit trail
-   - Logs: user_id, resource_type, resource_id, action, old_values, new_values, ip_address, user_agent
+- Toda tarefa exige teste automatizado (caminho feliz + 1 caminho de erro) antes de
+  ser considerada concluída.
+- Todo endpoint que move dinheiro ou estoque é **idempotente** (chave de idempotência
+  no header).
+- Toda transição de status de `SubOrder`/`Payment` emite um evento de domínio — mesmo
+  dentro do monolito.
+- Nenhum módulo lê tabela de outro módulo diretamente; só via serviço exposto.
+- Toda tabela financeira é **append-only para auditoria** (sem UPDATE destrutivo em
+  `split_transactions`).
+- LGPD: dado pessoal de `buyer`/`seller` isolado em schema próprio, nunca em log.
 
-7. **operation_state_log** - State transition tracking
-   - Tracks: from_status → to_status, changed_by, changed_at, reason
+## Contratos de API mínimos por módulo
 
-8. **rate_limits** - Request throttling (in-memory in MVP)
-   - Per-endpoint, per-user, sliding window
+| Módulo | Endpoints obrigatórios no MVP |
+|---|---|
+| `identity` | `POST /auth/register`, `POST /auth/login`, `POST /auth/refresh`, `GET /me` |
+| `seller` | `POST /sellers`, `GET /sellers/:id`, `PATCH /sellers/:id/status` (admin) |
+| `catalog` | `POST /products`, `GET /products/:id`, `GET /products?query=`, `POST /products/:id/offers` |
+| `inventory` | `POST /offers/:id/reserve`, `POST /offers/:id/release`, `PATCH /offers/:id/stock` |
+| `cart` | `POST /cart/items`, `GET /cart`, `DELETE /cart/items/:id` |
+| `checkout` | `POST /checkout` → cria `Order` + N `SubOrder` |
+| `payments` | `POST /payments/charge`, `POST /payments/webhook` (assíncrono, idempotente) |
+| `orders` | `GET /orders/:id`, `GET /sellers/:id/orders`, `PATCH /suborders/:id/status` |
+| `shipping` | `POST /shipping/quote`, `POST /shipping/label`, `GET /shipping/:id/tracking` |
+| `reviews` | `POST /reviews` (apenas se `order.status = delivered`), `GET /products/:id/reviews` |
 
-## 🔌 API Endpoints (Implemented)
+## Modelo de dados (mínimo, não exaustivo)
 
-### Authentication
-- `POST /api/auth/register` - User registration
-- `POST /api/auth/login` - User login (returns JWT)
-- `GET /api/auth/me` - Get current user (requires auth)
-- `POST /api/auth/refresh` - Exchange a refresh token for a new access token (rotates it)
-- `POST /api/auth/logout` - Revoke a refresh token
+```sql
+-- catalog
+products(id, title, description, category_id, brand, attributes jsonb, created_at)
+offers(id, product_id, seller_id, price_cents, stock, condition, sla_days, is_buybox_winner bool)
 
-### Quotations
-- `GET /api/quotations` - List active quotations (Redis-cached, 10s)
-- `POST /api/quotations` - Create 15-min quotation (Redis-cached for its validity window)
-- `GET /api/quotations/:id` - Get specific quotation (Redis-cached)
+-- orders (um Order vira N SubOrder — regra inegociável)
+orders(id, buyer_id, total_cents, status, created_at)
+sub_orders(id, order_id, seller_id, subtotal_cents, shipping_cents, status)
+order_items(id, sub_order_id, offer_id, qty, unit_price_cents)
 
-### Operations
-- `GET /api/operations` - List user's operations (protected)
-- `POST /api/operations` - Create new operation (protected, notifies seller via WhatsApp)
-- `POST /api/operations/:id/confirm` - Confirm operation with buyer (protected, atomic, notifies seller via WhatsApp + email)
-- `GET /api/operations/stats` - Dashboard stats (protected)
+-- payments
+payments(id, order_id, gateway_id, status, method, total_cents)
+split_transactions(id, payment_id, seller_id, amount_cents, fee_cents, status)
 
-### Payments
-- `POST /api/payments/:operationId/checkout` - Create a Stripe checkout session for a confirmed operation (protected)
-- `POST /api/payments/webhook` - Stripe webhook (signature-verified); marks the transaction/operation completed and notifies the seller
+-- shipping
+shipments(id, sub_order_id, carrier, tracking_code, status, eta)
 
-## 🎨 Frontend Pages (Implemented)
+-- reviews
+reviews(id, order_item_id, author_id, target_type enum('product','seller'), rating, comment)
+```
 
-1. **Home** - Landing page with features & stats
-2. **Login** - User authentication
-3. **Register** - New account creation (seller/buyer choice)
-4. **Dashboard** - Main app (stats, operations list, create operation)
-5. **Components**:
-   - QuotationForm - Get instant quotations
-   - OperationsList - View all user operations
-   - CreateOperation - Manually create a new operation
+Nota Pagar.me: cada `seller` precisa de um `recipient_id` cadastrado no gateway no
+momento da aprovação (item 3 do backlog). `split_transactions.amount_cents` é um
+espelho local do split que o Pagar.me já calcula na criação da transação — serve
+para auditoria/conciliação, não para recalcular o split.
 
-## ✅ What's Done (MVP Week 1 - Optimized)
-
-**Infrastructure & Security**
-- [x] Project structure & monorepo setup
-- [x] Environment validation (Zod)
-- [x] Database schema with migrations (001 + 002_audit_trail)
-- [x] Audit trail logging (audit_logs, operation_state_log tables)
-- [x] Soft deletes & data integrity
-- [x] Connection pooling + transaction support
-- [x] PBKDF2 password hashing (crypto.ts)
-- [x] Rate limiting middleware (auth: 5/min, api: 100/min)
-- [x] Structured logging system
-
-**Backend API (Production-Ready)**
-- [x] Real Node.js server entrypoint (`@hono/node-server`) — `src/index.ts` stays a portable
-      Hono app export, `src/server.ts` adds the Node listener used by `npm run dev`/`start`
-- [x] Hono.js with proper error handling
-- [x] Custom error classes (ValidationError, AuthenticationError, etc)
-- [x] JWT authentication with expiration (`exp` claim, `JWT_EXPIRY`) + signature verification
-- [x] Refresh tokens: DB-backed (hashed, revocable, rotated on use), `/refresh` + `/logout`
-- [x] Input validation with Zod (all endpoints)
-- [x] Auth endpoints: register, login, refresh, logout, me
-- [x] Quotations: create, list, get — cached in Redis with graceful in-memory fallback
-- [x] Operations: create, confirm, list, stats (with audit)
-- [x] Payments: Stripe checkout session + signature-verified webhook
-- [x] Business validators (CPF, CNPJ, amount, commission)
-- [x] Twilio WhatsApp integration (real SDK call; no-ops with a log when unconfigured)
-- [x] Email notifications (SendGrid; welcome, operation confirmed, payment receipt)
-- [x] PDF contract/receipt/statement generation (pdfkit, real rendered output)
-- [x] Redis-backed rate limiting (falls back to in-memory when Redis is unavailable)
-- [x] `scripts/migrate.js` — idempotent migration runner tracked via `schema_migrations`
-- [x] Integration test suite (Hono `app.request()` + mocked DB layer, no live Postgres needed)
-
-**Frontend (Mobile-Responsive)**
-- [x] SvelteKit pages (Home, Login, Register, Dashboard, 404)
-- [x] Components (QuotationForm, OperationsList, CreateOperation)
-- [x] Svelte stores (auth with JWT persistence)
-- [x] Input validation & formatting (CPF, CNPJ, phone masks)
-- [x] Currency & date formatting
-- [x] Error messages & loading states
-- [x] Responsive grid layouts
-
-**Testing & Documentation**
-- [x] Auth tests (password hashing, validation)
-- [x] Integration tests: auth routes (register/login/refresh) and operations routes
-      (authorization rules, atomic confirm transaction) — 23 tests, mocked DB, no live Postgres
-- [x] CI/CD pipeline (GitHub Actions: backend typecheck + tests, frontend build, on every push/PR)
-- [x] Comprehensive README
-- [x] CLAUDE.md project context
-- [x] Environment example (.env.example)
-- [x] SQL migrations with comments (001 initial, 002 audit trail, 003 refresh tokens)
-
-## 🔄 Next Steps (Weeks 2-3)
-
-### Remaining before production
-- [ ] User email verification flow (send + confirm a verification code)
-- [ ] Buyer company (KYC) verification workflow
-- [ ] 2FA for sensitive operations
-- [ ] E2E tests against a real Postgres + Redis (current suite mocks the DB layer)
-- [ ] Load testing & optimization
-- [ ] Production deployment (Vercel frontend, Railway/Render backend + Postgres)
-- [ ] Provision real Twilio/SendGrid/Stripe credentials in the target environment —
-      the integrations are implemented and no-op safely without them, so nothing breaks
-      today, but notifications/payments won't actually fire until they're set
-
-## 💻 Development Commands
+## Comandos de desenvolvimento
 
 ```bash
-# Install dependencies
-npm install
-
-# Start dev servers (both frontend & backend)
-npm run dev
-
-# Build for production
-npm run build
-
-# Run database migrations (idempotent, tracked via schema_migrations)
-npm run -w backend db:migrate
-
-# Test
-npm test
-
-# Deploy frontend to Vercel
-npm run -w frontend build
-
-# Backend runs as a real Node.js server (src/server.ts) in production —
-# `npm run -w backend build && npm run -w backend start`. The optional
-# `npm run -w backend deploy:workers` path targets Cloudflare Workers, but
-# routes depend on `pg`/Node `crypto` and need the Supabase HTTP API swap
-# noted in Known Limitations before that target is usable.
+npm install                 # instala as dependências dos workspaces (apps/api, apps/web)
+npm run docker:up           # sobe Postgres + Redis (docker-compose.yml)
+npm run dev                 # roda api (NestJS) + web (Next.js) em paralelo
+npm run lint                # lint em api e web
+npm test                    # testes unitários em api e web
+npm run build                # build de produção em api e web
 ```
 
-## 🔐 Security Checklist (Production-Ready)
+## Estado atual
 
-**Implemented ✅**
-- [x] Password hashing with PBKDF2 (crypto.ts)
-- [x] Rate limiting on auth endpoints (5/min) + global API (100/min), Redis-backed with
-      in-memory fallback
-- [x] SQL injection protection (parameterized queries + Zod validation)
-- [x] CORS properly configured (whitelist origins)
-- [x] Input validation with Zod on ALL endpoints
-- [x] JWT authentication with signature verification and `exp` enforcement — fixed a bug where
-      `jwt-simple`'s `decode()` was called with `noVerify=true`, which skipped signature
-      verification entirely; any well-formed token was accepted regardless of who signed it
-- [x] Refresh tokens stored hashed (SHA-256) in the DB, rotated on every use, revocable via logout
-- [x] Request logging & audit trail (audit_logs table)
-- [x] Error messages don't leak sensitive info
-- [x] Soft deletes (no hard deletes)
-- [x] Environment variable validation
-- [x] X-RateLimit headers included
-- [x] Stripe webhook signature verification (`stripe.webhooks.constructEvent`)
+- [x] Item 1 do backlog: monorepo (npm workspaces), `apps/api` (NestJS) e `apps/web`
+      (Next.js) com lint + testes configurados, `docker-compose.yml` (Postgres +
+      Redis) e CI (GitHub Actions) rodando lint + test em ambos os apps.
+- [x] Item 2 do backlog: módulo `identity` — `POST /auth/register`,
+      `POST /auth/login`, `POST /auth/refresh`, `GET /me`. JWT (`@nestjs/jwt` +
+      `passport-jwt`), RBAC via `Roles`/`RolesGuard`, senha com PBKDF2, refresh
+      token hashado (SHA-256) e rotacionado a cada uso. Migration
+      `migrations/01-identity/001_create_users.sql` (schema `identity`, tabelas
+      `users` e `refresh_tokens`). Testes: unitários do `IdentityService`
+      (repositório em memória) + e2e via supertest (repositório em memória) —
+      caminho feliz e de erro cobertos em cada endpoint. Validado manualmente
+      ponta a ponta contra um Postgres real local.
+- [x] Item 3 do backlog: módulo `seller` — `POST /sellers` (onboarding, role
+      `seller`, um perfil por usuário), `GET /sellers/:id` (público),
+      `PATCH /sellers/:id/status` (admin, aprova/rejeita um seller `pending`,
+      motivo obrigatório ao rejeitar). Migration
+      `migrations/02-seller/001_create_sellers.sql` (schema `seller`,
+      `sellers.user_id` com FK para `identity.users`). Testes: unitários do
+      `SellerService` + e2e via supertest (repositório em memória) — caminho
+      feliz e erros (perfil duplicado, não encontrado, decisão já tomada,
+      papel/role sem permissão) cobertos. Validado manualmente ponta a ponta
+      contra um Postgres real, o que revelou e corrigiu um bug real: IDs
+      malformados na rota `:id` batiam direto no Postgres e estouravam 500 em
+      vez de 404 — corrigido com `ParseUUIDPipe` (retorna 400 para IDs mal
+      formados, 404 para IDs válidos que não existem).
+- [x] Item 4 do backlog: módulo `catalog` — `POST /products` (role `seller`/`admin`),
+      `GET /products?query=` (busca por título via `ILIKE`, sem Meilisearch ainda),
+      `GET /products/:id` (retorna o produto com suas `offers`, ordenadas por
+      preço), `POST /products/:id/offers` (só sellers aprovados — chama
+      `SellerService.getApprovedSellerForUser`, demonstrando a regra de
+      comunicação entre módulos via serviço exposto). Migration
+      `migrations/03-catalog/001_create_catalog.sql` (schema `catalog`, tabelas
+      `categories` — com um seed inicial, sem endpoint de gestão ainda —,
+      `products` e `offers`; `offers.seller_id` com FK para `seller.sellers`).
+      Testes: unitários do `CatalogService` + e2e via supertest — caminho feliz
+      e erros (categoria inexistente, produto inexistente, seller não aprovado,
+      role sem permissão, ID malformado) cobertos. Validado manualmente ponta a
+      ponta contra um Postgres real (onboarding → tentativa de oferta bloqueada
+      → aprovação → oferta criada → produto com ofertas → busca).
+- [x] Item 5 do backlog: módulo `inventory` — `POST /offers/:id/reserve`
+      (qualquer usuário autenticado), `POST /offers/:id/release` (libera uma
+      reserva `active` específica por `reservationId`),
+      `PATCH /offers/:id/stock` (admin, ou o seller dono da oferta). O contador
+      `stock` continua em `catalog.offers` (owned pelo módulo `catalog`, como no
+      schema da seção 2); `inventory` só possui a trilha de reservas
+      (`inventory.reservations`) e chama de volta `CatalogService.reserveOfferStock`
+      /`releaseOfferStock`/`setOfferStock` para mutar o estoque — nunca lê/escreve
+      `catalog.offers` diretamente. A concorrência é resolvida com um único
+      `UPDATE catalog.offers SET stock = stock - $qty WHERE stock >= $qty` — o
+      `WHERE` funciona como a checagem otimista (CAS): ou o decremento e a
+      validação acontecem atomicamente, ou a operação falha porque a
+      precondição não vale mais. Migration
+      `migrations/04-inventory/001_create_reservations.sql`. Testes: unitários
+      do `InventoryService` (reservar acima do estoque, liberar duas vezes,
+      seller tentando mexer no estoque de outro seller) + e2e via supertest.
+      Validado manualmente ponta a ponta contra um Postgres real.
+- [x] Item 6 do backlog: módulo `cart` — `POST /cart/items` (upsert: mesma
+      oferta soma quantidade em vez de duplicar linha),
+      `GET /cart` (itens do buyer autenticado, cada um enriquecido com a
+      `offer` via `CatalogService.getOfferById`), `DELETE /cart/items/:id`
+      (204, só o dono do item pode remover). Restrito ao role `buyer`. Não
+      valida estoque no momento de adicionar ao carrinho — isso é
+      responsabilidade do `checkout`/`inventory` no momento da compra; o
+      carrinho é só uma lista de intenção. Migration
+      `migrations/05-cart/001_create_cart_items.sql` (schema `cart`, uma
+      linha por `(buyer_id, offer_id)`, sem uma tabela `carts` separada — o
+      carrinho de um buyer é o conjunto de `cart_items` com seu `buyer_id`).
+      Testes: unitários do `CartService` + e2e via supertest — caminho feliz,
+      merge de quantidade, oferta inexistente, isolamento entre buyers, role
+      sem permissão. Validado manualmente ponta a ponta contra um Postgres
+      real.
+- [x] Item 7 do backlog: módulo `checkout` — `POST /checkout` (role `buyer`,
+      sem body: opera sobre o carrinho do usuário autenticado). Primeira
+      implementação real da regra de negócio central: lê o carrinho
+      (`CartService.getCart`), agrupa os itens por `seller_id`, reserva
+      estoque item a item (`InventoryService.reserve`), cria 1 `Order` + N
+      `SubOrder` (transação única no Postgres, com preço unitário
+      congelado no momento do checkout — não recalculado depois) e só então
+      limpa os itens do carrinho. Se uma reserva falhar no meio do processo
+      (estoque insuficiente), as reservas já feitas nesse mesmo checkout são
+      liberadas (compensação estilo saga) e o carrinho permanece intacto —
+      não existe uma transação Postgres única cobrindo cart+inventory+orders
+      ao mesmo tempo, já que são schemas/módulos diferentes; a atomicidade
+      real é por escopo (a escrita do Order+SubOrders+items é atômica no
+      próprio schema `orders`; entre módulos, o rollback é compensatório).
+      Criado também `orders` (módulo novo, mínimo por enquanto): schema
+      `orders.*` (`orders`, `sub_orders`, `order_items`,
+      `migrations/06-orders/001_create_orders.sql`) e `OrdersService`
+      (só `createOrder`, chamado pelo `checkout`) — sem controller ainda:
+      `GET /orders/:id`, `GET /sellers/:id/orders`, `PATCH /suborders/:id/status`
+      e a emissão de eventos de domínio por transição de status ficam para o
+      item 10, que vai completar este mesmo módulo. Criação de `SubOrder` não
+      conta como "transição" (não há estado anterior), então não emite evento
+      ainda — a infra de eventos (Redis/BullMQ, per decisão fechada da
+      seção 0) entra quando a primeira transição de status real acontecer
+      (item 8, `payments`, `pending → paid`). Testes: unitários do
+      `CheckoutService` (split multi-seller, carrinho vazio, rollback com
+      estoque insuficiente) + e2e via supertest. Validado manualmente ponta a
+      ponta contra um Postgres real, inclusive lendo as linhas de
+      `orders.orders`/`sub_orders`/`order_items` direto no banco.
+- [x] Item 8 do backlog: módulo `payments` — `POST /payments/charge` (role
+      `buyer`, exige header `Idempotency-Key`; uma chave repetida retorna a
+      mesma resposta em vez de cobrar de novo), `POST /payments/webhook`
+      (público, idempotente pelo `id` do evento do gateway). Integração real
+      com Pagar.me v5 via REST (`src/pagarme/pagarme.service.ts`, Basic Auth
+      com a secret key, `fetch` nativo do Node — sem SDK de terceiro) — **nunca
+      exercida contra os servidores da Pagar.me neste ambiente, por falta de
+      credenciais**; com `PAGARME_API_KEY`/`PAGARME_WEBHOOK_SECRET` ausentes
+      (caso deste ambiente), faz no-op seguro com log, mesmo padrão do projeto
+      anterior com Twilio/SendGrid/Stripe (`charge` grava o pagamento como
+      `pending`, sem cobrar de verdade; `webhook` aceita sem verificar
+      assinatura). Retrofit no `seller`: aprovação agora chama
+      `PagarmeService.createRecipient` e grava `recipient_id`
+      (`migrations/02-seller/002_add_recipient_id.sql`) — lacuna que já estava
+      documentada aqui desde o item 3 e não tinha sido implementada. Tabelas
+      `payments.payments` e `payments.split_transactions`
+      (`migrations/07-payments/001_create_payments.sql`) são **append-only**
+      de verdade: nenhum `UPDATE` de status — cada mudança de estado é uma
+      linha nova (mesmo `order_id`/`gateway_id`/`seller_id`), e o estado
+      "atual" é a última linha por `created_at`. Primeiros domain events reais
+      do projeto: `EventEmitterModule` (`@nestjs/event-emitter`, in-process,
+      "mesmo dentro do monolito" como a regra pede) emite
+      `sub_order.status_changed` a cada `SubOrder` que vira `paid`
+      (`OrdersService.markOrderPaid`, chamado tanto pelo charge síncrono
+      quanto pelo webhook assíncrono). `OrdersModule` ganhou `findById` e
+      `markOrderConfirmed`/`markSubOrderPaid` (ainda sem controller — os
+      endpoints de leitura pública ficam para o item 10). Testes: unitários do
+      `PaymentsService` (no-op sem gateway, split real quando "pago", idempotência
+      de charge e de webhook, seller sem `recipient_id`, assinatura de webhook
+      inválida) + e2e via supertest. Validado manualmente ponta a ponta contra
+      um Postgres real, incluindo o caso "gateway configurado mas seller sem
+      `recipient_id`" (409, sem nem tentar chamar a Pagar.me).
+- [x] Item 9 do backlog: módulo `shipping` — `POST /shipping/quote` (qualquer
+      usuário autenticado, recebe `toZipCode` real do chamador),
+      `POST /shipping/label` (role `seller`/`admin`; só gera etiqueta para um
+      `SubOrder` já `paid`; idempotente — chamar duas vezes retorna o mesmo
+      `shipment`), `GET /shipping/:id/tracking`. Integração real com Melhor
+      Envio v2 REST (`src/melhorenvio/melhorenvio.service.ts`, Bearer token,
+      `fetch` nativo, sem SDK de terceiro) — mesmo aviso do Pagar.me: **nunca
+      exercida contra os servidores da Melhor Envio neste ambiente**; sem
+      `MELHOR_ENVIO_TOKEN` faz no-op seguro (cotação R$0, sem gerar etiqueta
+      de verdade). Segundo consumidor real do evento `sub_order.status_changed`
+      (o primeiro foi o próprio log de auditoria implícito do item 8):
+      `ShippingService.handleSubOrderPaid` (`@OnEvent`) gera a etiqueta
+      automaticamente assim que um `SubOrder` vira `paid` — **validado ao
+      vivo** contra Postgres real (não só nos testes): simulei um webhook de
+      pagamento e confirmei a `orders.sub_orders.status='paid'` E a linha em
+      `shipping.shipments` aparecendo automaticamente, sem chamada manual,
+      provando que a cadeia evento→listener funciona de verdade dentro do
+      processo Nest, não só isolada em teste unitário. `checkout` agora chama
+      `ShippingService.quoteForSubOrder` para preencher
+      `sub_orders.shipping_cents` (antes sempre 0) — como não existe ainda
+      cadastro de endereço do buyer nem peso de produto (fora do escopo
+      destes endpoints), a cotação usa um CEP de destino e peso placeholder,
+      documentado no código (`shipping.service.ts`). `OrdersModule` ganhou
+      `findSubOrderById` (necessário para `shipping` validar dono + status
+      antes de gerar etiqueta) e `SubOrderInput`/`CreateOrderInput` passaram a
+      carregar `shippingCents` de verdade (antes hardcoded em 0). Migration
+      `migrations/08-shipping/001_create_shipments.sql`. Testes: unitários do
+      `ShippingService` (no-op sem gateway, idempotência do label, dono vs.
+      não-dono, sub-order não pago, listener de evento) + e2e via supertest.
+- [x] Item 10 do backlog: módulo `orders` (completo) — `GET /orders/:id`
+      (buyer dono ou admin — "o comprador vê o Order consolidado"),
+      `GET /sellers/:id/orders` (o próprio seller ou admin — "o seller vê só
+      seu(s) SubOrder", retorna só os `SubOrder`s daquele seller, não o
+      `Order` inteiro), `PATCH /suborders/:id/status` (seller dono ou admin;
+      só aceita `shipped`/`delivered` — nunca `paid`, que só `payments` pode
+      setar, senão um seller poderia se autodeclarar pago). Transições
+      ilegais (`pending→shipped`, `delivered→qualquer coisa`) são bloqueadas
+      com 409 antes de tocar no banco. Toda transição (inclusive a
+      `pending→paid` já existente desde o item 8) emite
+      `sub_order.status_changed`. Valendo a "regra de ouro" na prática: o
+      teste unitário pegou um bug real na emissão do evento —
+      `OrdersService` lia `subOrder.status` **depois** de chamar
+      `repository.updateSubOrderStatus(...)`, então se o repositório
+      mutasse o mesmo objeto em memória (como os fakes de teste fazem) em
+      vez de devolver um novo, o evento saía com `from` igual a `to`; corrigido
+      capturando o status anterior antes da chamada, tanto em
+      `transitionSubOrderStatus` quanto em `markOrderPaid`. `OrderRepository`
+      trocou `markSubOrderPaid` (fixo em "paid") por `updateSubOrderStatus`
+      (genérico) e ganhou `findSubOrdersBySellerId`. Testes: unitários do
+      `OrdersService` (owned pela primeira vez por um `orders.service.spec.ts`
+      dedicado — antes só era exercitado indiretamente via `checkout`/`payments`)
+      + e2e via supertest. Validado manualmente ponta a ponta contra um
+      Postgres real: checkout → tentativa de `shipped` antes de pago (409) →
+      pagamento via webhook simulado → `GET /sellers/:id/orders` já reflete
+      `paid` → `shipped` → `delivered`.
+- [x] Item 11 do backlog: módulo `reviews` — `POST /reviews` (role `buyer`;
+      exige `orderItemId` + `targetType` (`product`|`seller`) + `rating`
+      (1–5); só aceita se o `SubOrder` daquele item estiver `delivered`, e só
+      o comprador dono da compra pode revisar; uma review por
+      `(orderItemId, targetType)` — dá pra revisar o produto e o seller
+      separadamente para a mesma compra, mas não duas vezes o mesmo alvo),
+      `GET /products/:id/reviews` (público). Resolve dono/status/produto
+      chamando `OrdersService.getOrderItemContext` (novo — join dentro do
+      próprio schema `orders`: order_items → sub_orders → orders) e
+      `CatalogService.getOfferById`, nunca lendo `orders.*`/`catalog.*`
+      diretamente. `product_id`/`seller_id` são gravados na review no momento
+      da criação (não recalculados em toda leitura), então
+      `GET /products/:id/reviews` é um `SELECT` direto em `reviews.reviews`
+      sem precisar de JOIN entre schemas. Migration
+      `migrations/09-reviews/001_create_reviews.sql` (schema `reviews`, FK
+      para `orders.order_items`/`catalog.products`/`seller.sellers`, CHECK
+      garantindo `target_type` e a coluna de destino correspondente
+      preenchida). Testes: unitários do `ReviewsService` (review de produto,
+      de seller, antes de entregue, compra de outro buyer, duplicata) + e2e
+      via supertest. Validado manualmente ponta a ponta contra um Postgres
+      real: checkout → review bloqueada (409) → pago (webhook) → shipped →
+      delivered → review de produto e de seller aceitas → duplicata
+      bloqueada → listagem pública.
+- [x] Item 12 do backlog: storefront `apps/web` (Next.js App Router) — home
+      (`/`, busca por `GET /products?query=`), página de produto (`/products/:id`,
+      ofertas ordenadas por preço + reviews), carrinho (`/cart`, remover item,
+      "Finalizar compra" → `POST /checkout`), página de pedido (`/orders/:id`,
+      status por `SubOrder`, botão "Pagar com Pix" → `POST /payments/charge`
+      com `Idempotency-Key` gerada uma vez via `crypto.randomUUID()`),
+      login/registro (`/login`, `/register`). Camada de API centralizada em
+      `lib/api-client.ts` (`apiFetch<T>`, `ApiError` com `status`/`message`,
+      injeta `Authorization`/`Idempotency-Key`) e autenticação em
+      `lib/auth-context.tsx` (`AuthProvider`/`useAuth`, sessão persistida em
+      `localStorage`, sem cookie/SSR de sessão neste MVP). `NavHeader` já expõe
+      links para `/seller` e `/admin` (roles `seller`/`admin`) — rotas ainda
+      não implementadas, ficam para os itens 13/14. Backend ganhou
+      `app.enableCors({ origin: FRONTEND_URL, credentials: true })` em
+      `main.ts` (nova env var `FRONTEND_URL`, default
+      `http://localhost:3001`) — sem isso o browser bloqueia toda chamada do
+      storefront à API por causa da política de mesma origem. Testes:
+      unitários de `apiFetch` (happy path, `ApiError` no erro do servidor,
+      header `Idempotency-Key`) via vitest. Validado manualmente ponta a
+      ponta num browser real (Playwright/Chromium, não só os testes
+      unitários): subi Postgres + API (`node dist/main.js`) + storefront
+      (`next dev -p 3001`) de verdade, semeei um seller aprovado com 2
+      produtos via curl, e percorri o fluxo completo na UI — home lista os 2
+      produtos → cadastro de comprador → página de produto → adicionar ao
+      carrinho → carrinho mostra o item e o total corretos → "Finalizar
+      compra" cria o `Order` e redireciona para `/orders/:id` → "Pagar com
+      Pix" chama `POST /payments/charge` com sucesso. O pedido permanece
+      `pending` após o pagamento porque não há `PAGARME_API_KEY` neste
+      ambiente (no-op documentado no item 8: grava o pagamento como
+      `pending`, não confirma `paid` sem uma cobrança real ou webhook) — não
+      é um bug do storefront, é o mesmo comportamento sem gateway já usado
+      nos outros módulos. Esse teste ponta a ponta pegou e corrigiu um bug
+      real de configuração: o CORS tinha sido adicionado ao `main.ts` mas a
+      API rodando ainda era o `dist/main.js` de antes da mudança — só depois
+      de rebuildar (`npm run build -w apps/api`) e reiniciar o processo o
+      `OPTIONS /products` passou a responder com
+      `Access-Control-Allow-Origin` e o browser parou de bloquear as
+      chamadas.
+- [x] Item 13 do backlog: painel seller (`/seller`, Next.js) — resolve "meu
+      perfil de seller" via um endpoint novo, `GET /sellers/me` (role
+      `seller`, precisa vir cadastrado ANTES de `GET /sellers/:id` no
+      controller, senão o Nest casava `me` como `:id` e tentava um cast de
+      UUID em `me`), que não existia porque nenhum contrato do MVP previa "o
+      seller descobrir o próprio id" — os outros endpoints de `seller` sempre
+      recebem um `:id` de fora (admin aprovando, produto resolvendo o
+      dono). `SellerService.findMine` reaproveita `findByUserId` do
+      repositório mas, ao contrário de `getApprovedSellerForUser` (usado pelo
+      `catalog`), não exige `approved` — o painel precisa mostrar os estados
+      `pending`/`rejected` também. O painel decide o que renderizar a partir
+      desse único fetch: sem perfil → formulário de onboarding
+      (`POST /sellers`); `pending`/`rejected` → aviso, sem formulário de
+      produto; `approved` → formulário de cadastro de produto (`POST
+      /products` + `POST /products/:id/offers` em sequência — cria o produto
+      e já cria a primeira oferta, os dois contratos já existentes do
+      `catalog`, sem endpoint novo aí) e a lista "Meus pedidos"
+      (`GET /sellers/:id/orders`, já existente desde o item 10), com um botão
+      de transição de status por `SubOrder` (`PATCH /suborders/:id/status`)
+      que só aparece quando há uma transição manual válida a partir do
+      status atual (`paid → shipped`, `shipped → delivered` — mesma máquina
+      de estados do backend, sem duplicar a regra no front: o botão só
+      existe se `NEXT_STATUS[status]` tiver um valor). Testes: unitário novo
+      para `SellerService.findMine` (dono encontra o próprio perfil, usuário
+      sem perfil ainda recebe 404) + e2e novo em `seller.e2e-spec.ts`
+      (`GET /sellers/me` autenticado e sem perfil). Validado manualmente
+      ponta a ponta num browser real (Playwright): cadastro como seller →
+      redireciona para `/seller` → onboarding → "aguardando aprovação" →
+      aprovado via chamada de admin (o painel admin de verdade é o item 14;
+      usei a mesma API que ele vai chamar) → formulário de produto aparece →
+      produto cadastrado pela UI aparece na home do storefront → pedido
+      criado direto via API contra esse produto, sub-order forçado a `paid`
+      via SQL só para o teste (não há gateway real neste ambiente para
+      chegar em `paid` pelo fluxo de pagamento, mesma limitação documentada
+      nos itens 8/9) → botão "Marcar como enviado" muda o badge para
+      "Enviado" → "Marcar como entregue" muda para "Entregue" e o botão some
+      (estado terminal), confirmando que a máquina de estados do backend e o
+      controle condicional do botão no front estão de acordo.
+- [x] Item 14 do backlog: painel admin (`/admin`, Next.js) — último item do
+      backlog original; a partir daqui o projeto entra em produção e o
+      próprio CLAUDE.md libera a Fase 4/5 (cupom, chat, recomendação,
+      disputa, fulfillment), hoje fora de escopo. Duas seções: "Aprovação de
+      vendedores" e "Moderação de catálogo", cada uma expondo um endpoint que
+      não existia — nenhum dos dois módulos precisava, até agora, que alguém
+      *listasse* várias entidades de uma vez (o resto da API sempre resolve
+      uma entidade já conhecida a partir de um `:id`).
+      `GET /sellers` (role admin, `?status=pending|approved|rejected`
+      opcional, 400 se o valor não bater com o enum) — `SellerRepository`
+      ganhou `list(status?)`, implementado tanto no Postgres quanto (script
+      em Python via Bash, mesmo mecanismo usado no item 8/9/10 para cascatas
+      de fake — 11 arquivos de teste implementam a interface) em todo fake
+      `InMemorySellerRepository` espalhado pelos specs/e2e de `seller`,
+      `shipping`, `payments`, `reviews`, `catalog`, `orders`, `checkout`,
+      `inventory`. Moderação de catálogo precisou de coluna nova,
+      `catalog.products.is_blocked` (`migrations/03-catalog/002_add_product_
+      moderation.sql`, default `false`) — decisão de design: bloquear
+      **esconde da busca/listagem** (`GET /products?query=`), mas **não**
+      derruba o acesso direto por `GET /products/:id` (um link direto
+      continua abrindo o produto bloqueado; a moderação aqui é "tirar de
+      circulação", não um takedown completo) — simplificação documentada
+      aqui, não um requisito não descoberto. Dois endpoints novos em
+      `catalog`: `GET /products/admin/all` (role admin, lista tudo incluindo
+      bloqueados — sem ele o painel não teria como achar algo pra
+      desbloquear) e `PATCH /products/:id/moderation` (role admin,
+      `{ isBlocked: boolean }`). `ProductRepository.search` ganhou um
+      segundo parâmetro opcional `{ includeBlocked }`; como é opcional, os
+      13 fakes que implementam `ProductRepository` só precisaram de duas
+      mudanças mecânicas (não da assinatura de `search`): o campo novo
+      `isBlocked: false` no objeto retornado por `create()` e um método novo
+      `setBlocked()` — outra rodada do mesmo script Python, dessa vez em dois
+      padrões de fake distintos (`NullProductRepository` nos specs que nem
+      usam catálogo de verdade, e `InMemoryProductRepository` nos que usam).
+      Painel: "Aprovação de vendedores" lista pendentes com Aprovar/Rejeitar
+      (rejeitar exige motivo, mesma regra do backend — o botão de confirmar
+      fica desabilitado até haver texto, refletindo o
+      `.refine()` do Zod no `UpdateSellerStatusDto`); "Moderação de
+      catálogo" lista todo produto com um botão Bloquear/Desbloquear por
+      linha. Testes: unitários novos (`SellerService.list`,
+      `CatalogService.setProductBlocked`/`listAllProductsForAdmin`) + e2e
+      novos em `seller.e2e-spec.ts` (listar, filtrar por status, rejeitar
+      não-admin, status inválido) e `catalog.e2e-spec.ts` (bloquear some da
+      busca mas não da listagem admin, rejeitar não-admin). Validado
+      manualmente ponta a ponta num browser real (Playwright): login como
+      admin → vendedor pendente (criado via API) aparece na fila → Aprovar →
+      some da fila → tabela de moderação lista os 3 produtos existentes →
+      bloquear um → badge vira "Bloqueado" e ele desaparece da busca da home
+      → desbloquear → badge volta a "Visível".
 
-**To Implement 🔄**
-- [ ] HTTPS/TLS enforcement (deployment config)
-- [ ] Email verification workflow
-- [ ] 2FA for sensitive operations
-- [ ] CSRF tokens for state-changing requests
-- [ ] CSV injection prevention (if CSV export added)
-- [ ] Database encryption at rest
-- [ ] Secrets rotation policy
-- [ ] IP whitelisting for sensitive endpoints
+Com o item 14 em produção, o backlog original (seção 3) está completo.
 
-## 📝 Environment Variables
+- [x] Revisão pós-item-14: dois bugs reais encontrados e corrigidos num passe de
+      code review sobre o diff dos itens 12–14. (1) `ProductForm` (painel
+      seller) fazia `price.replace(',', '.')` para converter o preço digitado
+      em centavos — funciona para `"19,90"` mas quebra em valores com
+      separador de milhar BR, tipo `"1.234,56"` (vira `"1.234.56"`, dois
+      pontos, `Number()` retorna `NaN`), e o bug só se manifestava *depois*
+      do `POST /products` já ter criado o produto — `POST /products/:id/offers`
+      falhava a validação do Zod em seguida, deixando um produto órfão sem
+      oferta, sem nenhuma pista visível pro seller do que deu errado. Corrigido
+      extraindo um `parsePriceToCents` de verdade (trata `"19,90"`, `"19.90"`
+      e `"1.234,56"`, retorna `null` em vez de `NaN`) para `lib/format-price.ts`
+      — ao lado do `formatPriceCents` que já existia lá, são a mesma conversão
+      nos dois sentidos — e validando o preço *antes* de criar o produto, não
+      depois. Testes novos em `format-price.test.ts` cobrindo os três formatos
+      e os casos de erro. (2) `GET /products/admin/all` (a listagem da
+      moderação de catálogo) reaproveitava `ProductRepository.search()` sem
+      perceber que o `LIMIT 50` do SQL se aplicava mesmo com
+      `includeBlocked: true` — então um produto fora dos 50 mais recentes
+      ficava inacessível tanto pela busca pública (por estar bloqueado) quanto
+      pela listagem do admin (por estar fora do limite), exatamente o buraco
+      que esse endpoint existe pra fechar. Corrigido só aplicando o `LIMIT 50`
+      quando `includeBlocked` não é passado — a listagem do admin volta tudo.
+      Sem fake de teste reproduz esse bug (os fakes em memória não replicam
+      `LIMIT`), então foi validado manualmente contra Postgres real: 60
+      produtos semeados, o mais antigo bloqueado, `GET /products` retorna 50 e
+      não inclui o bloqueado, `GET /products/admin/all` retorna os 60
+      (bloqueado incluso). Lint + testes unitários/e2e + build de `api` e
+      `web` voltando a verde depois das duas correções.
 
-Required:
-```
-DATABASE_URL=postgresql://...
-JWT_SECRET=your-secret-key
-```
+Infra compartilhada criada junto do item 2 (reaproveitável pelos próximos
+módulos): `ConfigModule` com validação Zod de env vars (`src/config/env.schema.ts`),
+`DatabaseModule` expondo um `pg.Pool` global (`src/database/database.module.ts`,
+token `PG_POOL`), e um runner de migração idempotente
+(`scripts/migrate.js` → `npm run db:migrate -w apps/api`, migrations em
+`migrations/<módulo>/*.sql`, tracked via `public.schema_migrations`). CI roda as
+migrations contra um serviço Postgres antes dos testes.
 
-Optional — each integration no-ops safely (with a log line) when its variables are unset:
-```
-REDIS_URL=redis://...                  # cache + rate limiting; falls back to in-memory
-TWILIO_ACCOUNT_SID=...
-TWILIO_AUTH_TOKEN=...
-TWILIO_PHONE_NUMBER=...
-SENDGRID_API_KEY=...
-SENDGRID_FROM_EMAIL=no-reply@milhaslivre.com
-STRIPE_SECRET_KEY=...
-STRIPE_WEBHOOK_SECRET=...
-FRONTEND_URL=http://localhost:5173     # used for Stripe checkout success/cancel redirects
-VITE_API_URL=http://localhost:3000
-```
-
-## 📊 Performance Targets
-
-- TTFB: <100ms (edge cache)
-- API Response: <50ms
-- Cache Hit Rate: >80%
-- Uptime: 99.9%
-
-## 🚀 Deployment Checklist
-
-### Backend (Cloudflare Workers)
-- [ ] Setup Cloudflare account
-- [ ] Configure Workers environment
-- [ ] Set production secrets
-- [ ] Deploy with `wrangler deploy`
-
-### Frontend (Vercel)
-- [ ] Connect GitHub repo
-- [ ] Configure environment variables
-- [ ] Setup custom domain
-- [ ] Enable auto-deployment
-
-### Database (Railway/Render)
-- [ ] PostgreSQL instance created
-- [ ] Migrations applied
-- [ ] Redis cache configured
-- [ ] Backups enabled
-
-## 🔗 Important Links
-
-- Repository: https://github.com/foxtecnologiaonline/milhaslivre
-- Branch: `claude/milhaslivre-intermediador-mvp-u65yh7`
-- Vercel: (TBD)
-- Cloudflare Workers: (TBD)
-
-## 📞 Key Contacts/Notes
-
-- Twilio SMS: ~R$ 0.05 per message
-- Redis + PostgreSQL: ~R$ 20/month
-- Cloudflare Workers: Free tier sufficient for MVP
-- Estimated break-even: 10-20 operations
-
-## 🎓 Code Patterns to Follow
-
-### Backend (Hono)
-```typescript
-// Routes use Hono's type-safe handlers
-app.get('/path', async (c) => {
-  const validated = Schema.parse(c.req.json());
-  return c.json(result);
-});
-```
-
-### Frontend (Svelte)
-```svelte
-<script>
-  import { onMount } from 'svelte';
-  let state = $state();
-</script>
-```
-
-### Database
-- Use parameterized queries always
-- Connection pooling via pg Pool
-- Redis for quotation caching
-
-## 📌 Known Limitations & TODOs
-
-**Security**
-- [x] JWT expiration (`exp` claim, `JWT_EXPIRY`, default 24h) — done
-- [x] Refresh token endpoint (`/api/auth/refresh`, DB-backed, rotated on use) — done
-- [ ] 2FA for admin operations
-- [ ] Email verification workflow before account activation
-- [ ] Phone verification for WhatsApp notifications
-
-**Business Logic**
-- [ ] Buyer company verification workflow (KYC)
-- [x] Payment integration — Stripe checkout + webhook implemented; PagSeguro not covered
-- [ ] Automatic point transfer verification
-- [ ] Dispute resolution system
-- [ ] Chargeback protection
-
-**Integration**
-- [x] WhatsApp Twilio SDK integration — done, no-ops when TWILIO_* is unset
-- [x] PDF contract generation (pdfkit) — done
-- [x] Email notifications (SendGrid) — done, AWS SES not covered
-- [ ] SMS fallback notifications
-- [ ] Webhook notifications for external systems (beyond the Stripe webhook)
-
-**Production**
-- [x] Redis cache implementation (quotations, rate limiting) — done, falls back to in-memory
-- [ ] Database read replicas for scaling
-- [ ] Cron jobs for stale operation cleanup
-- [ ] Background job queue (Bull/BullMQ)
-- [ ] Monitoring & alerting (Sentry, DataDog)
-- [ ] Performance profiling
-- [ ] Load testing suite
-- [ ] Cloudflare Workers deploy target needs the `pg`/Node `crypto` routes swapped for a
-      Supabase HTTP API before `deploy:workers` is production-usable (default target is
-      the Node.js server in `src/server.ts`)
-
-**Frontend**
-- [ ] Offline mode with service workers
-- [ ] Real-time updates (WebSockets/SSE)
-- [ ] Dark mode toggle
-- [ ] i18n (Portuguese/English)
-
----
-
-**Last Updated**: 2026-09-04
-**Status**: MVP integrations complete (Redis, Twilio, SendGrid, Stripe, JWT refresh, PDF, CI/CD) — remaining work is KYC/2FA/email-verification and live deployment
-**Next Review**: After production deployment
+**Última atualização**: 2026-10-28 (revisão pós-item-14 — 2 bugs corrigidos)
