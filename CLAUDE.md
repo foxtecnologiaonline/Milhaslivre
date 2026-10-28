@@ -464,6 +464,35 @@ npm run build                # build de produção em api e web
 
 Com o item 14 em produção, o backlog original (seção 3) está completo.
 
+- [x] Revisão pós-item-14: dois bugs reais encontrados e corrigidos num passe de
+      code review sobre o diff dos itens 12–14. (1) `ProductForm` (painel
+      seller) fazia `price.replace(',', '.')` para converter o preço digitado
+      em centavos — funciona para `"19,90"` mas quebra em valores com
+      separador de milhar BR, tipo `"1.234,56"` (vira `"1.234.56"`, dois
+      pontos, `Number()` retorna `NaN`), e o bug só se manifestava *depois*
+      do `POST /products` já ter criado o produto — `POST /products/:id/offers`
+      falhava a validação do Zod em seguida, deixando um produto órfão sem
+      oferta, sem nenhuma pista visível pro seller do que deu errado. Corrigido
+      extraindo um `parsePriceToCents` de verdade (trata `"19,90"`, `"19.90"`
+      e `"1.234,56"`, retorna `null` em vez de `NaN`) para `lib/format-price.ts`
+      — ao lado do `formatPriceCents` que já existia lá, são a mesma conversão
+      nos dois sentidos — e validando o preço *antes* de criar o produto, não
+      depois. Testes novos em `format-price.test.ts` cobrindo os três formatos
+      e os casos de erro. (2) `GET /products/admin/all` (a listagem da
+      moderação de catálogo) reaproveitava `ProductRepository.search()` sem
+      perceber que o `LIMIT 50` do SQL se aplicava mesmo com
+      `includeBlocked: true` — então um produto fora dos 50 mais recentes
+      ficava inacessível tanto pela busca pública (por estar bloqueado) quanto
+      pela listagem do admin (por estar fora do limite), exatamente o buraco
+      que esse endpoint existe pra fechar. Corrigido só aplicando o `LIMIT 50`
+      quando `includeBlocked` não é passado — a listagem do admin volta tudo.
+      Sem fake de teste reproduz esse bug (os fakes em memória não replicam
+      `LIMIT`), então foi validado manualmente contra Postgres real: 60
+      produtos semeados, o mais antigo bloqueado, `GET /products` retorna 50 e
+      não inclui o bloqueado, `GET /products/admin/all` retorna os 60
+      (bloqueado incluso). Lint + testes unitários/e2e + build de `api` e
+      `web` voltando a verde depois das duas correções.
+
 Infra compartilhada criada junto do item 2 (reaproveitável pelos próximos
 módulos): `ConfigModule` com validação Zod de env vars (`src/config/env.schema.ts`),
 `DatabaseModule` expondo um `pg.Pool` global (`src/database/database.module.ts`,
@@ -472,4 +501,4 @@ token `PG_POOL`), e um runner de migração idempotente
 `migrations/<módulo>/*.sql`, tracked via `public.schema_migrations`). CI roda as
 migrations contra um serviço Postgres antes dos testes.
 
-**Última atualização**: 2026-09-11 (item 14 — backlog original completo)
+**Última atualização**: 2026-10-28 (revisão pós-item-14 — 2 bugs corrigidos)

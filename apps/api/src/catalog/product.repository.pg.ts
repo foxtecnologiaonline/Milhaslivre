@@ -50,18 +50,24 @@ export class PgProductRepository implements ProductRepository {
 
   async search(query: string | undefined, options?: SearchOptions): Promise<ProductRecord[]> {
     const blockedClause = options?.includeBlocked ? '' : 'is_blocked = false AND ';
+    // The admin "list all" call (includeBlocked: true) is meant to see every
+    // product so there's something to unblock — capping it at 50 like the
+    // public search would make products older than the 50 most recent
+    // permanently unreachable from the admin panel (hidden from search once
+    // blocked, and now hidden from the admin listing too).
+    const limitClause = options?.includeBlocked ? '' : ' LIMIT 50';
 
     if (!query) {
       const { rows } = await this.pool.query<ProductRow>(
         `SELECT ${SELECT_COLUMNS} FROM catalog.products
-         WHERE ${blockedClause}true ORDER BY created_at DESC LIMIT 50`,
+         WHERE ${blockedClause}true ORDER BY created_at DESC${limitClause}`,
       );
       return rows.map(mapRow);
     }
 
     const { rows } = await this.pool.query<ProductRow>(
       `SELECT ${SELECT_COLUMNS} FROM catalog.products
-       WHERE ${blockedClause}title ILIKE $1 ORDER BY created_at DESC LIMIT 50`,
+       WHERE ${blockedClause}title ILIKE $1 ORDER BY created_at DESC${limitClause}`,
       [`%${query}%`],
     );
     return rows.map(mapRow);

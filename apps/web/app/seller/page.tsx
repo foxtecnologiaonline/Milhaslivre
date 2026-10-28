@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { apiFetch, ApiError } from '../../lib/api-client';
 import { useAuth } from '../../lib/auth-context';
-import { formatPriceCents } from '../../lib/format-price';
+import { formatPriceCents, parsePriceToCents } from '../../lib/format-price';
 import type { Seller, SubOrder } from '../../lib/types';
 
 const SUB_ORDER_STATUS_LABEL: Record<string, string> = {
@@ -188,8 +188,13 @@ function ProductForm({
     setSubmitting(true);
     setSuccess(null);
     onError(null);
+    const priceCents = parsePriceToCents(price);
+    if (priceCents === null) {
+      onError('Preço inválido. Use um valor como 19,90 ou 1.234,56.');
+      setSubmitting(false);
+      return;
+    }
     try {
-      const priceCents = Math.round(Number(price.replace(',', '.')) * 100);
       const product = await apiFetch<{ id: string }>('/products', {
         method: 'POST',
         token,
